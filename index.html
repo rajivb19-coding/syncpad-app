@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>SyncPad — Notes & Whiteboard</title>
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="SyncPad" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%230f172a'/%3E%3Cpath d='M144 160h224M144 240h140M144 320h96' stroke='%2338bdf8' stroke-width='36' stroke-linecap='round'/%3E%3Cpath d='M368 264l40 40-112 112-52 12 12-52z' fill='%2338bdf8'/%3E%3C/svg%3E" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    html, body, #root {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #0f172a;
+      color: #f8fafc;
+      -webkit-tap-highlight-color: transparent;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Firebase Modular SDK Bridge -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-app.js";
+    import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-database.js";
+
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyBbr-33OjioACO7GJEsgIzLOs9BpZxjeMQ",
+      authDomain: "syncpad-cloud.firebaseapp.com",
+      databaseURL: "https://syncpad-cloud-default-rtdb.firebaseio.com",
+      projectId: "syncpad-cloud",
+      storageBucket: "syncpad-cloud.firebasestorage.app",
+      messagingSenderId: "959117212033",
+      appId: "1:959117212033:web:bf5b73e04949fe59b59080"
+    };
+
+    const isConfigured = Boolean(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL);
+
+    let db = null;
+    if (isConfigured) {
+      const app = initializeApp(FIREBASE_CONFIG);
+      db = getDatabase(app);
+    }
+
+    window.__syncpadCloud = {
+      enabled: isConfigured,
+      subscribeRoom(roomCode, callback) {
+        if (!db) return () => {};
+        const roomRef = ref(db, `rooms/${roomCode}`);
+        return onValue(roomRef, (snapshot) => {
+          const val = snapshot.val();
+          if (val) callback(val);
+        }, (err) => {
+          console.error("Firebase read error:", err);
+        });
+      },
+      async saveRoom(roomCode, payload) {
+        if (!db) return;
+        const roomRef = ref(db, `rooms/${roomCode}`);
+        await set(roomRef, payload);
+      }
+    };
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    function round1(n) {
+      return Math.round(n * 10) / 10;
+    }
+
+    function shouldKeepPoint(prevPt, nextPt, minDist = 3) {
+      if (!prevPt) return true;
+      const dx = nextPt.x - prevPt.x;
+      const dy = nextPt.y - prevPt.y;
+      return (dx * dx + dy * dy) >= minDist * minDist;
+    }
+
+    function perpendicularDistance(pt, lineStart, lineEnd) {
+      const dx = lineEnd.x - lineStart.x;
+      const dy = lineEnd.y - lineStart.y;
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq === 0) {
+        return Math.hypot(pt.x - lineStart.x, pt.y - lineStart.y);
+      }
+      const t = Math.max(0, Math.min(1, ((pt.x - lineStart.x) * dx + (pt.y - lineStart.y) * dy) / lenSq));
+      const projX = lineStart.x + t * dx;
+      const projY = lineStart.y + t * dy;
+      return Math.hypot(pt.x - projX, pt.y - projY);
+    }
+
+    function simplifyPoints(points, epsilon = 2) {
+      if (!Array.isArray(points) || points.length <= 2) return points || [];
+
+      let maxDist = 0;
+      let index = 0;
+      const start = points[0];
+      const end = points[points.length - 1];
+
+      for (let i = 1; i < points.length - 1; i++) {
+        const d = perpendicularDistance(points[i], start, end);
+        if (d > maxDist) {
+          maxDist = d;
+          index = i;
+        }
+      }
+
+      if (maxDist > epsilon) {
+        const left = simplifyPoints(points.slice(0, index + 1), epsilon);
+        const right = simplifyPoints(points.slice(index), epsilon);
+        return left.slice(0, -1).concat(right);
+      }
+
+      return [start, end];
+    }
+
+    function encodeElementForCloud(el) {
+      if (el.type !== "stroke" || !Array.isArray(el.points) || el.points.length === 0) {
+        return { ...el, text: el.text ?? "" };
+      }
+
+      const deltas = [];
+      let prevX = round1(el.points[0].x);
+      let prevY = round1(el.points[0].y);
+      deltas.push(prevX, prevY);
+
+      for (let i = 1; i < el.points.length; i++) {
+        const x = round1(el.points[i].x);
+        const y = round1(el.points[i].y);
+        deltas.push(round1(x - prevX), round1(y - prevY));
+        prevX = x;
+        prevY = y;
+      }
+
+      return {
+        id: el.id,
+        t: "s",
+        m: el.tool === "highlighter" ? "h" : el.tool === "eraser" ? "e" : "p",
+        c: el.color,
+        w: el.size,
+        d: deltas
+      };
+    }
+
+    function decodeElementFromCloud(item) {
+      if (!item) return null;
+      if (item.t === "s" && Array.isArray(item.d) && item.d.length >= 2) {
+        const points = [];
+        let curX = item.d[0];
+        let curY = item.d[1];
+        points.push({ x: curX, y: curY });
+
+        for (let i = 2; i + 1 < item.d.length; i += 2) {
+          curX = round1(curX + item.d[i]);
+          curY = round1(curY + item.d[i + 1]);
+          points.push({ x: curX, y: curY });
+        }
+
+        return {
+          id: item.id,
+          type: "stroke",
+          tool: item.m === "h" ? "highlighter" : item.m === "e" ? "eraser" : "pen",
+          color: item.c,
+          size: item.w,
+          points
+        };
+      }
+      return item;
+    }
+
+    function Icon({ name, className = "w-4 h-4" }) {
+      const paths = {
+        fileText: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></>,
+        penTool: <><path d="m12 19 7-7 3 3-7 7-3-3z"/><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="m2 2 7.586 7.586"/><circle cx="11" cy="11" r="2"/></>,
+        columns: <><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="12" y1="3" x2="12" y2="21"/></>,
+        copy: <><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></>,
+        check: <polyline points="20 6 9 17 4 12"/>,
+        download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>,
+        plus: <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
+        trash: <><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></>,
+        highlighter: <><path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/></>,
+        eraser: <><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></>,
+        square: <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>,
+        sticky: <><path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"/><polyline points="15 3 15 9 21 9"/></>,
+        undo: <><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></>,
+        redo: <><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></>,
+        share: <><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></>
+      };
+      return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+          {paths[name] || null}
+        </svg>
+      );
+    }
+
+    function generateRoomCode() {
+      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      let code = "";
+      for (let i = 0; i < 6; i++) {
+        code += chars[Math.floor(Math.random() * chars.length)];
+      }
+      return code;
+    }
+
+    function getInitialRoom() {
+      const params = new URLSearchParams(window.location.search);
+      const fromUrl = params.get("room");
+      if (fromUrl && fromUrl.trim()) return fromUrl.trim().toUpperCase().slice(0, 12);
+      const saved = localStorage.getItem("syncpad_active_room");
+      if (saved) return saved;
+      const fresh = generateRoomCode();
+      localStorage.setItem("syncpad_active_room", fresh);
+      return fresh;
+    }
+
+    const COLORS = ["#38bdf8", "#f472b6", "#facc15", "#4ade80", "#f8fafc", "#fb923c"];
+
+    function App() {
+      const [roomCode, setRoomCode] = useState(getInitialRoom);
+      const [roomInput, setRoomInput] = useState(getInitialRoom);
+      const [viewMode, setViewMode] = useState("split");
+      const [copied, setCopied] = useState(false);
+      const [syncStatus, setSyncStatus] = useState("Connecting...");
+
+      const [notes, setNotes] = useState(() => [{
+        id: "note-1",
+        title: "Shared Scratchpad",
+        content: "# SyncPad Cloud Sync\n\nOpen this URL with the same **Room Code** on your Android phone, iPhone, and Fire Tablet."
+      }]);
+      const [activeNoteId, setActiveNoteId] = useState("note-1");
+
+      const [tool, setTool] = useState("pen");
+      const [color, setColor] = useState("#38bdf8");
+      const [strokeSize, setStrokeSize] = useState(3);
+      const [elements, setElements] = useState([]);
+      const [history, setHistory] = useState([]);
+      const [redoStack, setRedoStack] = useState([]);
+
+      const draftElementRef = useRef(null);
+      const canvasRef = useRef(null);
+      const isApplyingRemoteRef = useRef(false);
+      const lastWrittenAtRef = useRef(0);
+      const saveTimerRef = useRef(null);
+
+      const storageKey = `syncpad_room_${roomCode}`;
+
+      useEffect(() => {
+        localStorage.setItem("syncpad_active_room", roomCode);
+        const url = new URL(window.location.href);
+        url.searchParams.set("room", roomCode);
+        window.history.replaceState({}, "", url.toString());
+      }, [roomCode]);
+
+      useEffect(() => {
+        try {
+          const raw = localStorage.getItem(storageKey);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed.notes) && parsed.notes.length > 0) {
+              setNotes(parsed.notes);
+              setActiveNoteId(parsed.activeNoteId || parsed.notes[0].id);
+            }
+            if (Array.isArray(parsed.elements)) {
+              setElements(parsed.elements.map(decodeElementFromCloud).filter(Boolean));
+            }
+          }
+        } catch (e) {
+          console.error("Local cache read error", e);
+        }
+
+        if (!window.__syncpadCloud?.enabled) {
+          setSyncStatus("Local only (add Firebase config)");
+          return;
+        }
+
+        setSyncStatus("Live Cloud");
+        const unsubscribe = window.__syncpadCloud.subscribeRoom(roomCode, (remoteData) => {
+          if (Date.now() - lastWrittenAtRef.current < 400) return;
+          if (!remoteData || (remoteData.updatedAt && remoteData.updatedAt < lastWrittenAtRef.current)) return;
+
+          isApplyingRemoteRef.current = true;
+          if (Array.isArray(remoteData.notes) && remoteData.notes.length > 0) {
+            setNotes(remoteData.notes);
+          }
+          if (Array.isArray(remoteData.elements)) {
+            setElements(remoteData.elements.map(decodeElementFromCloud).filter(Boolean));
+          } else {
+            setElements([]);
+          }
+          setSyncStatus("Synced from cloud");
+          setTimeout(() => {
+            isApplyingRemoteRef.current = false;
+          }, 50);
+        });
+
+        return () => unsubscribe && unsubscribe();
+      }, [roomCode, storageKey]);
+
+      useEffect(() => {
+        const compressedElements = elements.map(encodeElementForCloud);
+        const payload = {
+          notes,
+          elements: compressedElements,
+          activeNoteId,
+          updatedAt: Date.now()
+        };
+
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(payload));
+        } catch (e) {
+          console.error("Local storage save error", e);
+        }
+
+        if (isApplyingRemoteRef.current || !window.__syncpadCloud?.enabled) return;
+
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(async () => {
+          try {
+            const ts = Date.now();
+            lastWrittenAtRef.current = ts;
+            await window.__syncpadCloud.saveRoom(roomCode, { ...payload, updatedAt: ts });
+            setSyncStatus("Live Cloud");
+          } catch (err) {
+            console.error("Firebase write error:", err);
+            setSyncStatus("Sync error (check rules)");
+          }
+        }, 250);
+
+        return () => {
+          if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        };
+      }, [notes, elements, activeNoteId, roomCode, storageKey]);
+
+      const activeNote = notes.find((n) => n.id === activeNoteId) || notes[0];
+
+      const updateNoteContent = (value) => {
+        setNotes((prev) => prev.map((n) => (n.id === activeNote.id ? { ...n, content: value } : n)));
+      };
+
+      const updateNoteTitle = (value) => {
+        setNotes((prev) => prev.map((n) => (n.id === activeNote.id ? { ...n, title: value } : n)));
+      };
+
+      const addNote = () => {
+        const id = `note-${Date.now()}`;
+        const created = { id, title: `Note ${notes.length + 1}`, content: "" };
+        setNotes((prev) => [...prev, created]);
+        setActiveNoteId(id);
+      };
+
+      const deleteNote = (id) => {
+        if (notes.length <= 1) return;
+        const filtered = notes.filter((n) => n.id !== id);
+        setNotes(filtered);
+        if (activeNoteId === id) setActiveNoteId(filtered[0].id);
+      };
+
+      const insertSnippet = (snippet) => {
+        const current = activeNote?.content || "";
+        updateNoteContent(current ? `${current}\n${snippet}` : snippet);
+      };
+
+      const copyRoomLink = () => {
+        navigator.clipboard?.writeText(window.location.href);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+      };
+
+      const exportMarkdown = () => {
+        const blob = new Blob([`# ${activeNote.title}\n\n${activeNote.content}`], { type: "text/markdown;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${(activeNote.title || "note").toLowerCase().replace(/\s+/g, "-")}.md`;
+        a.click();
+      };
+
+      const renderCanvas = useCallback(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        const rect = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+
+        if (canvas.width !== Math.floor(rect.width * dpr) || canvas.height !== Math.floor(rect.height * dpr)) {
+          canvas.width = Math.floor(rect.width * dpr);
+          canvas.height = Math.floor(rect.height * dpr);
+        }
+
+        ctx.save();
+        ctx.scale(dpr, dpr);
+        ctx.clearRect(0, 0, rect.width, rect.height);
+
+        ctx.fillStyle = "rgba(148, 163, 184, 0.14)";
+        const step = 24;
+        for (let x = step; x < rect.width; x += step) {
+          for (let y = step; y < rect.height; y += step) {
+            ctx.fillRect(x, y, 1.5, 1.5);
+          }
+        }
+
+        const all = draftElementRef.current ? [...elements, draftElementRef.current] : elements;
+
+        for (const el of all) {
+          ctx.save();
+          if (el.type === "stroke" && Array.isArray(el.points)) {
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            ctx.strokeStyle = el.tool === "eraser" ? "#0f172a" : el.color;
+            ctx.globalAlpha = el.tool === "highlighter" ? 0.35 : 1;
+            ctx.lineWidth = el.tool === "highlighter" ? el.size * 4 : el.tool === "eraser" ? el.size * 6 : el.size;
+            ctx.beginPath();
+            if (el.points.length === 1) {
+              ctx.arc(el.points[0].x, el.points[0].y, ctx.lineWidth / 2, 0, Math.PI * 2);
+              ctx.fillStyle = ctx.strokeStyle;
+              ctx.fill();
+            } else {
+              el.points.forEach((pt, idx) => {
+                if (idx === 0) ctx.moveTo(pt.x, pt.y);
+                else ctx.lineTo(pt.x, pt.y);
+              });
+              ctx.stroke();
+            }
+          } else if (el.type === "rect") {
+            ctx.strokeStyle = el.color;
+            ctx.lineWidth = el.size;
+            ctx.strokeRect(el.x, el.y, el.w, el.h);
+          } else if (el.type === "sticky") {
+            ctx.fillStyle = "#fef08a";
+            ctx.fillRect(el.x, el.y, 150, 100);
+            ctx.strokeStyle = "#eab308";
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(el.x, el.y, 150, 100);
+            ctx.fillStyle = "#1e293b";
+            ctx.font = "13px sans-serif";
+            ctx.fillText(el.text || "Note", el.x + 10, el.y + 24, 130);
+          }
+          ctx.restore();
+        }
+
+        ctx.restore();
+      }, [elements, viewMode]);
+
+      useEffect(() => {
+        renderCanvas();
+        window.addEventListener("resize", renderCanvas);
+        return () => window.removeEventListener("resize", renderCanvas);
+      }, [renderCanvas]);
+
+      const getCanvasPoint = (e) => {
+        const rect = canvasRef.current.getBoundingClientRect();
+        return {
+          x: round1(e.clientX - rect.left),
+          y: round1(e.clientY - rect.top)
+        };
+      };
+
+      const handlePointerDown = (e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        const pt = getCanvasPoint(e);
+
+        if (tool === "sticky") {
+          const label = window.prompt("Sticky note text:", "Idea");
+          if (label === null) return;
+          setHistory((h) => [...h, elements]);
+          setRedoStack([]);
+          setElements((prev) => [...prev, { id: Date.now(), type: "sticky", x: pt.x, y: pt.y, text: label }]);
+          return;
+        }
+
+        if (tool === "rect") {
+          draftElementRef.current = { id: Date.now(), type: "rect", x: pt.x, y: pt.y, w: 0, h: 0, color, size: strokeSize };
+        } else {
+          draftElementRef.current = { id: Date.now(), type: "stroke", tool, color, size: strokeSize, points: [pt] };
+        }
+        renderCanvas();
+      };
+
+      const handlePointerMove = (e) => {
+        const draft = draftElementRef.current;
+        if (!draft) return;
+        const pt = getCanvasPoint(e);
+
+        if (draft.type === "stroke") {
+          const lastPt = draft.points[draft.points.length - 1];
+          if (shouldKeepPoint(lastPt, pt, 3)) {
+            draft.points.push(pt);
+            renderCanvas();
+          }
+        } else if (draft.type === "rect") {
+          draft.w = round1(pt.x - draft.x);
+          draft.h = round1(pt.y - draft.y);
+          renderCanvas();
+        }
+      };
+
+      const handlePointerUp = () => {
+        const draft = draftElementRef.current;
+        if (!draft) return;
+        draftElementRef.current = null;
+
+        if (draft.type === "stroke" && draft.points.length > 2) {
+          draft.points = simplifyPoints(draft.points, 2).map((p) => ({
+            x: round1(p.x),
+            y: round1(p.y)
+          }));
+        }
+
+        setHistory((h) => [...h, elements]);
+        setRedoStack([]);
+        setElements((prev) => [...prev, draft]);
+      };
+
+      const handleUndo = () => {
+        if (history.length === 0) return;
+        const previous = history[history.length - 1];
+        setRedoStack((r) => [...r, elements]);
+        setHistory((h) => h.slice(0, -1));
+        setElements(previous);
+      };
+
+      const handleRedo = () => {
+        if (redoStack.length === 0) return;
+        const next = redoStack[redoStack.length - 1];
+        setHistory((h) => [...h, elements]);
+        setRedoStack((r) => r.slice(0, -1));
+        setElements(next);
+      };
+
+      const exportPNG = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const a = document.createElement("a");
+        a.href = canvas.toDataURL("image/png");
+        a.download = `syncpad-${roomCode}-board.png`;
+        a.click();
+      };
+
+      const handleRoomSubmit = (e) => {
+        e.preventDefault();
+        const cleaned = roomInput.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 12);
+        if (cleaned) {
+          setRoomCode(cleaned);
+          setRoomInput(cleaned);
+        }
+      };
+
+      return (
+        <div className="flex flex-col h-full bg-slate-950 text-slate-100 select-none">
+          <header className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-900 border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <span className="font-bold tracking-tight text-sky-400 text-base">SyncPad</span>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                {syncStatus}
+              </span>
+            </div>
+
+            <form onSubmit={handleRoomSubmit} className="flex items-center gap-1.5">
+              <span className="text-xs text-slate-400">Room:</span>
+              <input
+                value={roomInput}
+                onChange={(e) => setRoomInput(e.target.value.toUpperCase())}
+                className="w-24 px-2 py-1 text-xs font-mono uppercase bg-slate-800 border border-slate-700 rounded text-white focus:outline-none focus:border-sky-400"
+                aria-label="Room Code"
+              />
+              <button type="submit" className="px-2.5 py-1 text-xs font-medium bg-sky-500 hover:bg-sky-400 text-slate-950 rounded">
+                Join
+              </button>
+              <button
+                type="button"
+                onClick={copyRoomLink}
+                className="flex items-center gap-1 px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
+                title="Copy Room Link"
+              >
+                <Icon name={copied ? "check" : "share"} className="w-3.5 h-3.5 text-sky-400" />
+                <span>{copied ? "Copied" : "Link"}</span>
+              </button>
+            </form>
+
+            <div className="hidden md:flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+              <button
+                onClick={() => setViewMode("notes")}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md ${viewMode === "notes" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+              >
+                <Icon name="fileText" className="w-3.5 h-3.5" /> Notes
+              </button>
+              <button
+                onClick={() => setViewMode("split")}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md ${viewMode === "split" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+              >
+                <Icon name="columns" className="w-3.5 h-3.5" /> Split
+              </button>
+              <button
+                onClick={() => setViewMode("whiteboard")}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md ${viewMode === "whiteboard" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+              >
+                <Icon name="penTool" className="w-3.5 h-3.5" /> Board
+              </button>
+            </div>
+          </header>
+
+          <main className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
+            {(viewMode === "notes" || viewMode === "split") && (
+              <section className={`flex flex-col min-h-0 bg-slate-900/60 border-b md:border-b-0 md:border-r border-slate-800 ${viewMode === "split" ? "h-1/2 md:h-full md:w-5/12" : "flex-1"}`}>
+                <div className="flex items-center gap-1 px-2 py-1.5 bg-slate-900 border-b border-slate-800 overflow-x-auto">
+                  {notes.map((n) => (
+                    <div
+                      key={n.id}
+                      onClick={() => setActiveNoteId(n.id)}
+                      className={`group flex items-center gap-1.5 px-2.5 py-1 rounded text-xs cursor-pointer shrink-0 ${
+                        n.id === activeNote.id ? "bg-slate-800 text-sky-300 border border-sky-500/40" : "text-slate-400 hover:bg-slate-800/50"
+                      }`}
+                    >
+                      <span className="truncate max-w-[110px]">{n.title || "Untitled"}</span>
+                      {notes.length > 1 && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); deleteNote(n.id); }}
+                          className="opacity-60 hover:opacity-100 text-rose-400"
+                          title="Delete note"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <button onClick={addNote} className="p-1 text-slate-400 hover:text-sky-400 rounded" title="New Note">
+                    <Icon name="plus" className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-1 px-2 py-1.5 bg-slate-900/80 border-b border-slate-800 text-xs">
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => insertSnippet("## Heading")} className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">H2</button>
+                    <button onClick={() => insertSnippet("- [ ] Task item")} className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">Checklist</button>
+                    <button onClick={() => insertSnippet("**bold text**")} className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded font-bold">B</button>
+                    <button onClick={() => insertSnippet("```\ncode\n```")} className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono">Code</button>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => navigator.clipboard?.writeText(activeNote.content)} className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-300">
+                      <Icon name="copy" className="w-3.5 h-3.5" /> Copy
+                    </button>
+                    <button onClick={exportMarkdown} className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-300">
+                      <Icon name="download" className="w-3.5 h-3.5" /> .MD
+                    </button>
+                  </div>
+                </div>
+
+                <input
+                  value={activeNote.title}
+                  onChange={(e) => updateNoteTitle(e.target.value)}
+                  placeholder="Note title..."
+                  className="px-3 py-2 bg-transparent border-b border-slate-800/80 font-semibold text-sm text-white focus:outline-none"
+                />
+                <textarea
+                  value={activeNote.content}
+                  onChange={(e) => updateNoteContent(e.target.value)}
+                  placeholder="Type your note here..."
+                  className="flex-1 w-full p-3 bg-transparent text-sm text-slate-100 leading-relaxed resize-none focus:outline-none select-text"
+                />
+              </section>
+            )}
+
+            {(viewMode === "whiteboard" || viewMode === "split") && (
+              <section className={`flex flex-col min-h-0 bg-slate-950 ${viewMode === "split" ? "h-1/2 md:h-full md:w-7/12" : "flex-1"}`}>
+                <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 bg-slate-900 border-b border-slate-800">
+                  <div className="flex items-center gap-1">
+                    {[
+                      { id: "pen", icon: "penTool", title: "Pen" },
+                      { id: "highlighter", icon: "highlighter", title: "Highlighter" },
+                      { id: "eraser", icon: "eraser", title: "Eraser" },
+                      { id: "rect", icon: "square", title: "Rectangle" },
+                      { id: "sticky", icon: "sticky", title: "Sticky Note" }
+                    ].map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => setTool(t.id)}
+                        title={t.title}
+                        className={`p-1.5 rounded ${tool === t.id ? "bg-sky-500 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+                      >
+                        <Icon name={t.icon} className="w-4 h-4" />
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    {COLORS.map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => setColor(c)}
+                        style={{ backgroundColor: c }}
+                        className={`w-5 h-5 rounded-full border ${color === c ? "border-white scale-110" : "border-slate-700"}`}
+                        aria-label={`Color ${c}`}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="range"
+                      min="1"
+                      max="10"
+                      value={strokeSize}
+                      onChange={(e) => setStrokeSize(Number(e.target.value))}
+                      className="w-16 accent-sky-400"
+                      title="Stroke Size"
+                    />
+                    <button onClick={handleUndo} disabled={history.length === 0} className="p-1.5 bg-slate-800 disabled:opacity-30 rounded" title="Undo">
+                      <Icon name="undo" className="w-4 h-4" />
+                    </button>
+                    <button onClick={handleRedo} disabled={redoStack.length === 0} className="p-1.5 bg-slate-800 disabled:opacity-30 rounded" title="Redo">
+                      <Icon name="redo" className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => { setHistory((h) => [...h, elements]); setElements([]); }}
+                      className="p-1.5 bg-slate-800 hover:bg-rose-950 text-rose-400 rounded"
+                      title="Clear Board"
+                    >
+                      <Icon name="trash" className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={exportPNG}
+                      className="flex items-center gap-1 px-2 py-1 text-xs bg-slate-800 hover:bg-slate-700 rounded"
+                      title="Export PNG"
+                    >
+                      <Icon name="download" className="w-3.5 h-3.5" /> PNG
+                    </button>
+                  </div>
+                </div>
+
+                <div className="relative flex-1 min-h-0">
+                  <canvas
+                    ref={canvasRef}
+                    onPointerDown={handlePointerDown}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerUp}
+                    style={{ touchAction: "none" }}
+                    className="w-full h-full block cursor-crosshair"
+                  />
+                </div>
+              </section>
+            )}
+          </main>
+
+          <nav className="flex md:hidden items-center justify-around py-1.5 bg-slate-900 border-t border-slate-800 text-xs">
+            <button
+              onClick={() => setViewMode("notes")}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg ${viewMode === "notes" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+            >
+              <Icon name="fileText" className="w-4 h-4" /> Notes
+            </button>
+            <button
+              onClick={() => setViewMode("split")}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg ${viewMode === "split" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+            >
+              <Icon name="columns" className="w-4 h-4" /> Split
+            </button>
+            <button
+              onClick={() => setViewMode("whiteboard")}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg ${viewMode === "whiteboard" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+            >
+              <Icon name="penTool" className="w-4 h-4" /> Board
+            </button>
+          </nav>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch((err) => {
+          console.warn("Service worker registration failed:", err);
+        });
+      });
+    }
+  </script>
+</body>
+</html>
