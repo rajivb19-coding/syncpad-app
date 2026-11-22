@@ -665,6 +665,7 @@
 
       const [zenMode, setZenMode] = useState(false);
       const [stylusOnly, setStylusOnly] = useState(false);
+      const [canvasModal, setCanvasModal] = useState(null);
 
       const [viewport, setViewport] = useState({ panX: 24, panY: 24, zoom: 1 });
       const viewportRef = useRef(viewport);
@@ -675,6 +676,7 @@
       const activePointersRef = useRef(new Map());
       const pinchStateRef = useRef(null);
       const canvasRef = useRef(null);
+      const canvasModalInputRef = useRef(null);
       const fillImageCacheRef = useRef(new Map());
       const isApplyingRemoteRef = useRef(false);
       const lastWrittenAtRef = useRef(0);
@@ -701,25 +703,53 @@
       }, [roomCode]);
 
       useEffect(() => {
+        if (canvasModal && canvasModalInputRef.current) {
+          const timer = setTimeout(() => {
+            canvasModalInputRef.current?.focus();
+            canvasModalInputRef.current?.select();
+          }, 30);
+          return () => clearTimeout(timer);
+        }
+      }, [canvasModal]);
+
+      useEffect(() => {
+        if (saveTimerRef.current) {
+          clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+
+        let hydratedLocal = false;
         try {
           const raw = localStorage.getItem(storageKey);
           if (raw) {
             const parsed = JSON.parse(raw);
+            hydratedLocal = true;
+            isApplyingRemoteRef.current = true;
             if (Array.isArray(parsed.notes) && parsed.notes.length > 0) {
               setNotes(parsed.notes);
               setActiveNoteId(parsed.activeNoteId || parsed.notes[0].id);
             }
             if (Array.isArray(parsed.elements)) {
               setElements(parsed.elements.map(decodeElementFromCloud).filter(Boolean));
+            } else {
+              setElements([]);
             }
           }
         } catch (e) {
           console.error("Local cache read error", e);
         }
 
+        const clearHydrateGuardTimer = hydratedLocal
+          ? setTimeout(() => {
+              isApplyingRemoteRef.current = false;
+            }, 60)
+          : null;
+
         if (!window.__syncpadCloud?.enabled) {
           setSyncStatus("Local only (add Firebase config)");
-          return;
+          return () => {
+            if (clearHydrateGuardTimer) clearTimeout(clearHydrateGuardTimer);
+          };
         }
 
         setSyncStatus("Live Cloud");
@@ -742,7 +772,10 @@
           }, 50);
         });
 
-        return () => unsubscribe && unsubscribe();
+        return () => {
+          if (clearHydrateGuardTimer) clearTimeout(clearHydrateGuardTimer);
+          unsubscribe && unsubscribe();
+        };
       }, [roomCode, storageKey]);
 
       useEffect(() => {
@@ -883,6 +916,7 @@
           const freshCode = await generateFreshRoomCode(roomCode);
           setConfirmClear(false);
           setSelectedId(null);
+          setCanvasModal(null);
           setHistory([]);
           setRedoStack([]);
           setRoomCode(freshCode);
@@ -906,6 +940,7 @@
 
         setConfirmClear(false);
         setSelectedId(null);
+        setCanvasModal(null);
         setHistory([]);
         setRedoStack([]);
         fillImageCacheRef.current.clear();
@@ -947,6 +982,40 @@
             setSyncStatus("Sync error (check rules)");
           }
         }
+      };
+
+      const commitCanvasModal = (e) => {
+        if (e) e.preventDefault();
+        if (!canvasModal) return;
+
+        const trimmed = canvasModal.value.trim();
+        if (trimmed) {
+          const newItem =
+            canvasModal.type === "text"
+              ? {
+                  id: Date.now(),
+                  type: "text",
+                  x: canvasModal.x,
+                  y: canvasModal.y,
+                  text: trimmed,
+                  color,
+                  fontSize: strokeSize * 4 + 10
+                }
+              : {
+                  id: Date.now(),
+                  type: "sticky",
+                  x: canvasModal.x,
+                  y: canvasModal.y,
+                  text: trimmed
+                };
+
+          setRedoStack([]);
+          setElements((prev) => {
+            setHistory((h) => [...h, prev]);
+            return [...prev, newItem];
+          });
+        }
+        setCanvasModal(null);
       };
 
       const screenToWorld = (clientX, clientY) => {
@@ -1231,35 +1300,26 @@
           off.height = BOARD_HEIGHT;
           const offCtx = off.getContext("2d");
           for (const el of elements) {
-            drawSingleElement(offCtx, el, false);
+            drawSingleElement(offCtx, el, true);
           }
           const dataUrl = computeFloodFillDataUrl(off, pt.x, pt.y, color);
           if (dataUrl) {
-            setHistory((h) => [...h, elements]);
             setRedoStack([]);
-            setElements((prev) => [...prev, { id: Date.now(), type: "fill", dataUrl, color }]);
+            setElements((prev) => {
+              setHistory((h) => [...h, prev]);
+              return [...prev, { id: Date.now(), type: "fill", dataUrl, color }];
+            });
           }
           return;
         }
 
-        if (tool === "text") {
-          const label = window.prompt("Enter canvas text:", "Label");
-          if (!label) return;
-          setHistory((h) => [...h, elements]);
-          setRedoStack([]);
-          setElements((prev) => [
-            ...prev,
-            { id: Date.now(), type: "text", x: pt.x, y: pt.y, text: label, color, fontSize: strokeSize * 4 + 10 }
-          ]);
-          return;
-        }
-
-        if (tool === "sticky") {
-          const label = window.prompt("Sticky note text:", "Idea");
-          if (label === null) return;
-          setHistory((h) => [...h, elements]);
-          setRedoStack([]);
-          setElements((prev) => [...prev, { id: Date.now(), type: "sticky", x: pt.x, y: pt.y, text: label }]);
+        if (tool === "text" || tool === "sticky") {
+          setCanvasModal({
+            type: tool,
+            x: pt.x,
+            y: pt.y,
+            value: ""
+          });
           return;
         }
 
@@ -1385,9 +1445,11 @@
           }));
         }
 
-        setHistory((h) => [...h, elements]);
         setRedoStack([]);
-        setElements((prev) => [...prev, draft]);
+        setElements((prev) => {
+          setHistory((h) => [...h, prev]);
+          return [...prev, draft];
+        });
       };
 
       const handleWheel = (e) => {
@@ -1486,17 +1548,21 @@
           excerpt: cleanExcerpt
         };
 
-        setHistory((h) => [...h, elements]);
         setRedoStack([]);
-        setElements((prev) => [...prev, newCard]);
+        setElements((prev) => {
+          setHistory((h) => [...h, prev]);
+          return [...prev, newCard];
+        });
         setSelectedId(newCard.id);
       };
 
       const deleteSelectedElement = () => {
         if (!selectedId) return;
-        setHistory((h) => [...h, elements]);
         setRedoStack([]);
-        setElements((prev) => prev.filter((el) => el.id !== selectedId));
+        setElements((prev) => {
+          setHistory((h) => [...h, prev]);
+          return prev.filter((el) => el.id !== selectedId);
+        });
         setSelectedId(null);
       };
 
@@ -1909,7 +1975,15 @@
                       </button>
                       <button
                         type="button"
-                        onClick={() => { setHistory((h) => [...h, elements]); setRedoStack([]); setElements([]); setSelectedId(null); fillImageCacheRef.current.clear(); }}
+                        onClick={() => {
+                          setRedoStack([]);
+                          setElements((prev) => {
+                            setHistory((h) => [...h, prev]);
+                            return [];
+                          });
+                          setSelectedId(null);
+                          fillImageCacheRef.current.clear();
+                        }}
                         className="p-2 bg-slate-800 hover:bg-rose-950 text-rose-400 rounded-lg min-w-[36px] min-h-[36px] flex items-center justify-center"
                         title="Clear Board"
                       >
@@ -1937,6 +2011,63 @@
                       Exit Zen
                     </button>
                   )}
+
+                  {canvasModal && (
+                    <div
+                      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4"
+                      onPointerDown={(e) => {
+                        if (e.target === e.currentTarget) setCanvasModal(null);
+                      }}
+                    >
+                      <form
+                        onSubmit={commitCanvasModal}
+                        className="w-full max-w-sm rounded-xl bg-slate-900 border border-slate-700 p-4 shadow-2xl flex flex-col gap-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-semibold text-sky-300">
+                            {canvasModal.type === "text" ? "Add Canvas Text" : "Add Sticky Note"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setCanvasModal(null)}
+                            className="text-slate-400 hover:text-white px-2 py-1 text-base leading-none min-h-[34px]"
+                            aria-label="Close"
+                          >
+                            ×
+                          </button>
+                        </div>
+
+                        <input
+                          ref={canvasModalInputRef}
+                          type="text"
+                          value={canvasModal.value}
+                          onChange={(e) => setCanvasModal((prev) => (prev ? { ...prev, value: e.target.value } : null))}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") setCanvasModal(null);
+                          }}
+                          placeholder={canvasModal.type === "text" ? "Type label text..." : "Type sticky note..."}
+                          className="w-full px-3 py-2.5 rounded-lg bg-slate-800 border border-slate-700 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-sky-400 select-text"
+                        />
+
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setCanvasModal(null)}
+                            className="px-3.5 py-2 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 min-h-[38px]"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            className="px-4 py-2 rounded-lg text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 min-h-[38px]"
+                          >
+                            {canvasModal.type === "text" ? "Place Text" : "Place Sticky"}
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  )}
+
                   <canvas
                     ref={canvasRef}
                     onPointerDown={handlePointerDown}

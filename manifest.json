@@ -1,39 +1,19 @@
 {
-  "rules": {
-    ".read": false,
-    ".write": false,
-    "rooms": {
-      "$roomCode": {
-        ".read": "$roomCode.matches(/^[A-Z0-9_-]{4,12}$/)",
-        ".write": "$roomCode.matches(/^[A-Z0-9_-]{4,12}$/)",
-        "updatedAt": {
-          ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 60000"
-        },
-        "activeNoteId": {
-          ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 64)"
-        },
-        "notes": {
-          ".validate": "!newData.exists() || newData.hasChildren()"
-        },
-        "elements": {
-          ".validate": "!newData.exists() || newData.hasChildren()"
-        },
-        "$other": {
-          ".validate": false
-        }
-      }
-    },
-    "presence": {
-      "$roomCode": {
-        ".read": "$roomCode.matches(/^[A-Z0-9_-]{4,12}$/)",
-        "$connId": {
-          ".write": "$roomCode.matches(/^[A-Z0-9_-]{4,12}$/)",
-          ".validate": "!newData.exists() || (newData.hasChild('at') && newData.child('at').isNumber() && newData.child('at').val() <= now + 60000)",
-          "$other": {
-            ".validate": false
-          }
-        }
-      }
+  "name": "SyncPad — Notes & Whiteboard",
+  "short_name": "SyncPad",
+  "description": "Shared whiteboard and note-taking scratchpad with real-time sync.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%230f172a'/%3E%3Cpath d='M144 160h224M144 240h140M144 320h96' stroke='%2338bdf8' stroke-width='36' stroke-linecap='round'/%3E%3Cpath d='M368 264l40 40-112 112-52 12 12-52z' fill='%2338bdf8'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
     }
-  }
+  ]
 }
