@@ -12,7 +12,7 @@
   <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%230f172a'/%3E%3Cpath d='M144 160h224M144 240h140M144 320h96' stroke='%2338bdf8' stroke-width='36' stroke-linecap='round'/%3E%3Cpath d='M368 264l40 40-112 112-52 12 12-52z' fill='%2338bdf8'/%3E%3C/svg%3E" />
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- React, ReactDOM & Babel with jsdelivr primary + cdnjs fallback -->
+  <!-- React & ReactDOM with jsdelivr primary + cdnjs fallback -->
   <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"
     onerror="this.onerror=null;this.src='https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js';"></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"
@@ -30,13 +30,6 @@
       color: #f8fafc;
       -webkit-tap-highlight-color: transparent;
     }
-    .no-scrollbar::-webkit-scrollbar {
-      display: none;
-    }
-    .no-scrollbar {
-      -ms-overflow-style: none;
-      scrollbar-width: none;
-    }
   </style>
 </head>
 <body>
@@ -45,17 +38,7 @@
   <!-- Firebase Modular SDK Bridge -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-app.js";
-    import {
-      getDatabase,
-      ref,
-      set,
-      get,
-      push,
-      remove,
-      onValue,
-      onDisconnect,
-      serverTimestamp
-    } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-database.js";
+    import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-database.js";
 
     const FIREBASE_CONFIG = {
       apiKey: "AIzaSyBbr-33OjioACO7GJEsgIzLOs9BpZxjeMQ",
@@ -75,71 +58,22 @@
       db = getDatabase(app);
     }
 
-    function hasUtilisedContent(val) {
-      if (!val || typeof val !== "object") return false;
-      const hasElements = Array.isArray(val.elements) && val.elements.length > 0;
-      const notesList = Array.isArray(val.notes)
-        ? val.notes
-        : val.notes && typeof val.notes === "object"
-          ? Object.values(val.notes)
-          : [];
-
-      const hasNoteContent = notesList.some((n) => {
-        if (!n || typeof n !== "object") return false;
-        const body = String(n.content || "").trim();
-        const title = String(n.title || "").trim();
-        const hasCustomTitle =
-          title.length > 0 &&
-          title !== "Shared Scratchpad" &&
-          !/^Note \d+$/i.test(title);
-        return body.length > 0 || hasCustomTitle;
-      });
-
-      return hasElements || hasNoteContent;
-    }
-
     window.__syncpadCloud = {
       enabled: isConfigured,
       subscribeRoom(roomCode, callback) {
         if (!db) return () => {};
-        const roomRef = ref(db, `rooms/${roomCode}`); return onValue( roomRef, (snapshot) => { const val = snapshot.val(); if (val) callback(val); }, (err) => { console.error("Firebase read error:", err); } ); }, async saveRoom(roomCode, payload) { if (!db) return; const roomRef = ref(db, `rooms/${roomCode}`);
-        await set(roomRef, payload);
-      },
-      async isRoomUtilised(roomCode) {
-        if (!db) return false;
-        try {
-          const snap = await get(ref(db, `rooms/${roomCode}`)); if (!snap.exists()) return false; return hasUtilisedContent(snap.val()); } catch (err) { console.warn("Room utilisation check skipped:", err); return false; } }, trackPresence(roomCode, onCountChange) { if (!db) { onCountChange(1); return () => {}; }  const roomPresenceRef = ref(db, `presence/${roomCode}`);
-        const myConnRef = push(roomPresenceRef);
-        const connectedRef = ref(db, ".info/connected");
-
-        const unsubConnected = onValue(connectedRef, (snap) => {
-          if (snap.val() !== true) return;
-          onDisconnect(myConnRef)
-            .remove()
-            .then(() => {
-              set(myConnRef, { at: serverTimestamp() });
-            })
-            .catch((err) => console.warn("Presence onDisconnect error:", err));
+        const roomRef = ref(db, `rooms/${roomCode}`);
+        return onValue(roomRef, (snapshot) => {
+          const val = snapshot.val();
+          if (val) callback(val);
+        }, (err) => {
+          console.error("Firebase read error:", err);
         });
-
-        const unsubList = onValue(
-          roomPresenceRef,
-          (snap) => {
-            const val = snap.val();
-            const count = val && typeof val === "object" ? Object.keys(val).length : 0;
-            onCountChange(Math.max(1, count));
-          },
-          (err) => {
-            console.warn("Presence read error:", err);
-            onCountChange(1);
-          }
-        );
-
-        return () => {
-          unsubConnected();
-          unsubList();
-          remove(myConnRef).catch(() => {});
-        };
+      },
+      async saveRoom(roomCode, payload) {
+        if (!db) return;
+        const roomRef = ref(db, `rooms/${roomCode}`);
+        await set(roomRef, payload);
       }
     };
   </script>
@@ -147,41 +81,15 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const BOARD_WIDTH = 2000;
-    const BOARD_HEIGHT = 1400;
-    const MIN_ZOOM = 0.4;
-    const MAX_ZOOM = 3;
-
-    const COLORS = ["#38bdf8", "#f472b6", "#facc15", "#4ade80", "#f8fafc", "#fb923c"];
-    const SIZE_PRESETS = [
-      { label: "S", value: 2 },
-      { label: "M", value: 4 },
-      { label: "L", value: 7 },
-      { label: "XL", value: 12 }
-    ];
-
-    function clamp(val, min, max) {
-      return Math.max(min, Math.min(max, val));
-    }
-
     function round1(n) {
       return Math.round(n * 10) / 10;
-    }
-
-    function rgbToHex(r, g, b) {
-      return (
-        "#" +
-        [r, g, b]
-          .map((v) => clamp(Math.round(v), 0, 255).toString(16).padStart(2, "0"))
-          .join("")
-      );
     }
 
     function shouldKeepPoint(prevPt, nextPt, minDist = 3) {
       if (!prevPt) return true;
       const dx = nextPt.x - prevPt.x;
       const dy = nextPt.y - prevPt.y;
-      return dx * dx + dy * dy >= minDist * minDist;
+      return (dx * dx + dy * dy) >= minDist * minDist;
     }
 
     function perpendicularDistance(pt, lineStart, lineEnd) {
@@ -223,30 +131,31 @@
     }
 
     function encodeElementForCloud(el) {
-      if (el.type === "stroke" && Array.isArray(el.points) && el.points.length > 0) {
-        const deltas = [];
-        let prevX = round1(el.points[0].x);
-        let prevY = round1(el.points[0].y);
-        deltas.push(prevX, prevY);
-
-        for (let i = 1; i < el.points.length; i++) {
-          const x = round1(el.points[i].x);
-          const y = round1(el.points[i].y);
-          deltas.push(round1(x - prevX), round1(y - prevY));
-          prevX = x;
-          prevY = y;
-        }
-
-        return {
-          id: el.id,
-          t: "s",
-          m: el.tool === "highlighter" ? "h" : el.tool === "eraser" ? "e" : "p",
-          c: el.color,
-          w: el.size,
-          d: deltas
-        };
+      if (el.type !== "stroke" || !Array.isArray(el.points) || el.points.length === 0) {
+        return { ...el, text: el.text ?? "" };
       }
-      return { ...el };
+
+      const deltas = [];
+      let prevX = round1(el.points[0].x);
+      let prevY = round1(el.points[0].y);
+      deltas.push(prevX, prevY);
+
+      for (let i = 1; i < el.points.length; i++) {
+        const x = round1(el.points[i].x);
+        const y = round1(el.points[i].y);
+        deltas.push(round1(x - prevX), round1(y - prevY));
+        prevX = x;
+        prevY = y;
+      }
+
+      return {
+        id: el.id,
+        t: "s",
+        m: el.tool === "highlighter" ? "h" : el.tool === "eraser" ? "e" : "p",
+        c: el.color,
+        w: el.size,
+        d: deltas
+      };
     }
 
     function decodeElementFromCloud(item) {
@@ -275,313 +184,6 @@
       return item;
     }
 
-    function hexToRgba(hex, alpha = 255) {
-      const clean = (hex || "#38bdf8").replace("#", "");
-      const full =
-        clean.length === 3
-          ? clean.split("").map((ch) => ch + ch).join("")
-          : clean.padEnd(6, "0").slice(0, 6);
-      const num = parseInt(full, 16);
-      return [(num >> 16) & 255, (num >> 8) & 255, num & 255, alpha];
-    }
-
-    function computeFloodFillDataUrl(sourceCanvas, startX, startY, fillHex) {
-      const width = sourceCanvas.width;
-      const height = sourceCanvas.height;
-      const sx = Math.floor(startX);
-      const sy = Math.floor(startY);
-      if (sx < 0 || sy < 0 || sx >= width || sy >= height) return null;
-
-      const srcCtx = sourceCanvas.getContext("2d");
-      const srcData = srcCtx.getImageData(0, 0, width, height);
-      const pixels = srcData.data;
-
-      const startIdx = (sy * width + sx) * 4;
-      const targetR = pixels[startIdx];
-      const targetG = pixels[startIdx + 1];
-      const targetB = pixels[startIdx + 2];
-      const targetA = pixels[startIdx + 3];
-
-      const [fillR, fillG, fillB, fillA] = hexToRgba(fillHex, 255);
-      const tol = 28;
-
-      const matchesTarget = (idx) =>
-        Math.abs(pixels[idx] - targetR) <= tol &&
-        Math.abs(pixels[idx + 1] - targetG) <= tol &&
-        Math.abs(pixels[idx + 2] - targetB) <= tol &&
-        Math.abs(pixels[idx + 3] - targetA) <= tol;
-
-      if (
-        Math.abs(targetR - fillR) <= 4 &&
-        Math.abs(targetG - fillG) <= 4 &&
-        Math.abs(targetB - fillB) <= 4 &&
-        Math.abs(targetA - fillA) <= 4
-      ) {
-        return null;
-      }
-
-      const outCanvas = document.createElement("canvas");
-      outCanvas.width = width;
-      outCanvas.height = height;
-      const outCtx = outCanvas.getContext("2d");
-      const outData = outCtx.createImageData(width, height);
-      const outPixels = outData.data;
-
-      const visited = new Uint8Array(width * height);
-      const stack = [[sx, sy]];
-      let changed = 0;
-
-      while (stack.length > 0) {
-        let [x, y] = stack.pop();
-        let rowOffset = y * width;
-        while (x >= 0 && !visited[rowOffset + x] && matchesTarget((rowOffset + x) * 4)) {
-          x--;
-        }
-        x++;
-
-        let spanAbove = false;
-        let spanBelow = false;
-
-        while (x < width) {
-          const pIdx = rowOffset + x;
-          if (visited[pIdx] || !matchesTarget(pIdx * 4)) break;
-          visited[pIdx] = 1;
-
-          const idx = pIdx * 4;
-          outPixels[idx] = fillR;
-          outPixels[idx + 1] = fillG;
-          outPixels[idx + 2] = fillB;
-          outPixels[idx + 3] = fillA;
-          changed++;
-
-          if (y > 0) {
-            const aboveP = pIdx - width;
-            const aboveMatch = !visited[aboveP] && matchesTarget(aboveP * 4);
-            if (!spanAbove && aboveMatch) {
-              stack.push([x, y - 1]);
-              spanAbove = true;
-            } else if (spanAbove && !aboveMatch) {
-              spanAbove = false;
-            }
-          }
-
-          if (y < height - 1) {
-            const belowP = pIdx + width;
-            const belowMatch = !visited[belowP] && matchesTarget(belowP * 4);
-            if (!spanBelow && belowMatch) {
-              stack.push([x, y + 1]);
-              spanBelow = true;
-            } else if (spanBelow && !belowMatch) {
-              spanBelow = false;
-            }
-          }
-
-          x++;
-        }
-      }
-
-      if (changed === 0) return null;
-      outCtx.putImageData(outData, 0, 0);
-      return outCanvas.toDataURL("image/png");
-    }
-
-    function drawArrowHead(ctx, x1, y1, x2, y2, size) {
-      const angle = Math.atan2(y2 - y1, x2 - x1);
-      const headLen = Math.max(12, size * 4);
-      ctx.beginPath();
-      ctx.moveTo(x2, y2);
-      ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6), y2 - headLen * Math.sin(angle - Math.PI / 6));
-      ctx.moveTo(x2, y2);
-      ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6), y2 - headLen * Math.sin(angle + Math.PI / 6));
-      ctx.stroke();
-    }
-
-    function getElementBounds(el) {
-      if (!el) return null;
-      if (el.type === "stroke" && Array.isArray(el.points) && el.points.length > 0) {
-        let minX = el.points[0].x,
-          maxX = el.points[0].x;
-        let minY = el.points[0].y,
-          maxY = el.points[0].y;
-        for (const p of el.points) {
-          if (p.x < minX) minX = p.x;
-          if (p.x > maxX) maxX = p.x;
-          if (p.y < minY) minY = p.y;
-          if (p.y > maxY) maxY = p.y;
-        }
-        const pad = (el.size || 3) * 2 + 4;
-        return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
-      }
-      if (el.type === "rect" || el.type === "ellipse") {
-        const x1 = Math.min(el.x, el.x + (el.w || 0));
-        const y1 = Math.min(el.y, el.y + (el.h || 0));
-        const w = Math.abs(el.w || 0);
-        const h = Math.abs(el.h || 0);
-        return { x: x1 - 4, y: y1 - 4, w: w + 8, h: h + 8 };
-      }
-      if (el.type === "line" || el.type === "arrow") {
-        const x1 = Math.min(el.x1, el.x2);
-        const y1 = Math.min(el.y1, el.y2);
-        const w = Math.abs(el.x2 - el.x1);
-        const h = Math.abs(el.y2 - el.y1);
-        return { x: x1 - 8, y: y1 - 8, w: w + 16, h: h + 16 };
-      }
-      if (el.type === "sticky") {
-        return { x: el.x, y: el.y, w: 150, h: 100 };
-      }
-      if (el.type === "card") {
-        return { x: el.x, y: el.y, w: el.w || 220, h: el.h || 120 };
-      }
-      if (el.type === "text") {
-        const fontSize = el.fontSize || 18;
-        const estW = Math.max(40, (el.text || "").length * fontSize * 0.58);
-        return { x: el.x - 4, y: el.y - fontSize, w: estW + 8, h: fontSize + 10 };
-      }
-      return null;
-    }
-
-    function hitTestElement(el, px, py) {
-      if (!el || el.type === "fill") return false;
-      const b = getElementBounds(el);
-      if (!b) return false;
-      return px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h;
-    }
-
-    function translateElement(el, dx, dy) {
-      const rdx = round1(dx);
-      const rdy = round1(dy);
-      if (el.type === "stroke" && Array.isArray(el.points)) {
-        return {
-          ...el,
-          points: el.points.map((p) => ({ x: round1(p.x + rdx), y: round1(p.y + rdy) }))
-        };
-      }
-      if (el.type === "line" || el.type === "arrow") {
-        return {
-          ...el,
-          x1: round1(el.x1 + rdx),
-          y1: round1(el.y1 + rdy),
-          x2: round1(el.x2 + rdx),
-          y2: round1(el.y2 + rdy)
-        };
-      }
-      return {
-        ...el,
-        x: round1((el.x || 0) + rdx),
-        y: round1((el.y || 0) + rdy)
-      };
-    }
-
-    function escapeHtml(str) {
-      return String(str || "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-    }
-
-    function formatInlineMarkdown(escapedLine) {
-      return escapedLine
-        .replace(/`([^`\n]+)`/g, "<code class='px-1.5 py-0.5 rounded bg-slate-800 text-sky-300 font-mono text-xs'>$1</code>")
-        .replace(/\*\*([^*\n]+)\*\*/g, "<strong class='font-semibold text-white'>$1</strong>");
-    }
-
-    function renderMarkdownHtml(mdText) {
-      const raw = String(mdText || "");
-      if (!raw.trim()) {
-        return "<p class='text-slate-500 italic'>Nothing to preview yet. Switch to Edit to add notes.</p>";
-      }
-
-      const lines = raw.replace(/\r\n/g, "\n").split("\n");
-      const out = [];
-      let inCodeBlock = false;
-      let codeLines = [];
-
-      const flushCode = () => {
-        if (inCodeBlock) {
-          out.push(
-            `<pre class="my-2 p-2.5 rounded-lg bg-slate-950 border border-slate-800 overflow-x-auto"><code class="text-xs font-mono text-emerald-300">${escapeHtml(codeLines.join("\n"))}</code></pre>`
-          );
-          inCodeBlock = false;
-          codeLines = [];
-        }
-      };
-
-      for (const line of lines) {
-        if (line.trim().startsWith("```")) {
-          if (inCodeBlock) {
-            flushCode();
-          } else {
-            inCodeBlock = true;
-            codeLines = [];
-          }
-          continue;
-        }
-
-        if (inCodeBlock) {
-          codeLines.push(line);
-          continue;
-        }
-
-        const trimmed = line.trim();
-        if (!trimmed) {
-          out.push("<div class='h-2'></div>");
-          continue;
-        }
-
-        if (trimmed.startsWith("### ")) {
-          out.push(`<h3 class="text-sm font-bold text-sky-300 mt-2 mb-1">${formatInlineMarkdown(escapeHtml(trimmed.slice(4)))}</h3>`);
-        } else if (trimmed.startsWith("## ")) {
-          out.push(`<h2 class="text-base font-bold text-sky-300 mt-2.5 mb-1">${formatInlineMarkdown(escapeHtml(trimmed.slice(3)))}</h2>`);
-        } else if (trimmed.startsWith("# ")) {
-          out.push(`<h1 class="text-lg font-bold text-white mt-2 mb-1.5">${formatInlineMarkdown(escapeHtml(trimmed.slice(2)))}</h1>`);
-        } else if (/^- \[x\] /i.test(trimmed)) {
-          out.push(
-            `<div class="flex items-start gap-2 my-1 text-slate-300"><span class="text-emerald-400 font-bold">✓</span><span class="line-through text-slate-400">${formatInlineMarkdown(escapeHtml(trimmed.slice(6)))}</span></div>`
-          );
-        } else if (/^- \[ \] /.test(trimmed)) {
-          out.push(
-            `<div class="flex items-start gap-2 my-1 text-slate-200"><span class="text-sky-400 font-bold">☐</span><span>${formatInlineMarkdown(escapeHtml(trimmed.slice(6)))}</span></div>`
-          );
-        } else if (/^[-*] /.test(trimmed)) {
-          out.push(
-            `<div class="flex items-start gap-2 my-1 text-slate-200"><span class="text-sky-400">•</span><span>${formatInlineMarkdown(escapeHtml(trimmed.slice(2)))}</span></div>`
-          );
-        } else {
-          out.push(`<p class="my-1 text-slate-200 leading-relaxed">${formatInlineMarkdown(escapeHtml(line))}</p>`);
-        }
-      }
-
-      flushCode();
-      return out.join("");
-    }
-
-    function isRoomPayloadUtilised(data) {
-      if (!data || typeof data !== "object") return false;
-      if (Array.isArray(data.elements) && data.elements.length > 0) return true;
-      if (!Array.isArray(data.notes)) return false;
-      return data.notes.some((n) => {
-        if (!n) return false;
-        const body = String(n.content || "").trim();
-        const title = String(n.title || "").trim();
-        const hasCustomTitle =
-          title.length > 0 &&
-          title !== "Shared Scratchpad" &&
-          !/^Note \d+$/i.test(title);
-        return body.length > 0 || hasCustomTitle;
-      });
-    }
-
-    function isLocalRoomUtilised(code) {
-      try {
-        const raw = localStorage.getItem(`syncpad_room_${code}`);
-        if (!raw) return false;
-        return isRoomPayloadUtilised(JSON.parse(raw));
-      } catch {
-        return false;
-      }
-    }
-
     function Icon({ name, className = "w-4 h-4" }) {
       const paths = {
         fileText: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></>,
@@ -595,13 +197,6 @@
         highlighter: <><path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/></>,
         eraser: <><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></>,
         square: <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>,
-        circle: <circle cx="12" cy="12" r="9"/>,
-        line: <line x1="4" y1="20" x2="20" y2="4"/>,
-        arrow: <><line x1="5" y1="19" x2="19" y2="5"/><polyline points="9 5 19 5 19 15"/></>,
-        bucket: <><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 2-3.5 2-3.5s2 1.9 2 3.5Z"/></>,
-        eyedropper: <><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3Z"/></>,
-        textType: <><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></>,
-        cursor: <path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>,
         sticky: <><path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"/><polyline points="15 3 15 9 21 9"/></>,
         undo: <><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></>,
         redo: <><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></>,
@@ -634,50 +229,31 @@
       return fresh;
     }
 
+    const COLORS = ["#38bdf8", "#f472b6", "#facc15", "#4ade80", "#f8fafc", "#fb923c"];
+
     function App() {
       const [roomCode, setRoomCode] = useState(getInitialRoom);
       const [roomInput, setRoomInput] = useState(getInitialRoom);
       const [viewMode, setViewMode] = useState("split");
       const [copied, setCopied] = useState(false);
       const [syncStatus, setSyncStatus] = useState("Connecting...");
-      const [activeDevices, setActiveDevices] = useState(1);
-      const [confirmClear, setConfirmClear] = useState(false);
-      const [isGeneratingRoom, setIsGeneratingRoom] = useState(false);
 
-      const [notes, setNotes] = useState(() => [
-        {
-          id: "note-1",
-          title: "Shared Scratchpad",
-          content: "# SyncPad Cloud Sync\n\nNotes stay editable after creation and sync across your devices."
-        }
-      ]);
+      const [notes, setNotes] = useState(() => [{
+        id: "note-1",
+        title: "Shared Scratchpad",
+        content: "# SyncPad Cloud Sync\n\nOpen this URL with the same **Room Code** on your Android phone, iPhone, and Fire Tablet."
+      }]);
       const [activeNoteId, setActiveNoteId] = useState("note-1");
-      const [previewMode, setPreviewMode] = useState(false);
 
       const [tool, setTool] = useState("pen");
       const [color, setColor] = useState("#38bdf8");
-      const [strokeSize, setStrokeSize] = useState(4);
-      const [fillShape, setFillShape] = useState(false);
-      const [selectedId, setSelectedId] = useState(null);
+      const [strokeSize, setStrokeSize] = useState(3);
       const [elements, setElements] = useState([]);
       const [history, setHistory] = useState([]);
       const [redoStack, setRedoStack] = useState([]);
 
-      const [zenMode, setZenMode] = useState(false);
-      const [stylusOnly, setStylusOnly] = useState(false);
-      const [canvasModal, setCanvasModal] = useState(null);
-
-      const [viewport, setViewport] = useState({ panX: 24, panY: 24, zoom: 1 });
-      const viewportRef = useRef(viewport);
-      viewportRef.current = viewport;
-
       const draftElementRef = useRef(null);
-      const moveStateRef = useRef(null);
-      const activePointersRef = useRef(new Map());
-      const pinchStateRef = useRef(null);
       const canvasRef = useRef(null);
-      const canvasModalInputRef = useRef(null);
-      const fillImageCacheRef = useRef(new Map());
       const isApplyingRemoteRef = useRef(false);
       const lastWrittenAtRef = useRef(0);
       const saveTimerRef = useRef(null);
@@ -692,64 +268,25 @@
       }, [roomCode]);
 
       useEffect(() => {
-        if (!window.__syncpadCloud?.enabled || typeof window.__syncpadCloud.trackPresence !== "function") {
-          setActiveDevices(1);
-          return;
-        }
-        const stopPresence = window.__syncpadCloud.trackPresence(roomCode, (count) => {
-          setActiveDevices(count);
-        });
-        return () => stopPresence && stopPresence();
-      }, [roomCode]);
-
-      useEffect(() => {
-        if (canvasModal && canvasModalInputRef.current) {
-          const timer = setTimeout(() => {
-            canvasModalInputRef.current?.focus();
-            canvasModalInputRef.current?.select();
-          }, 30);
-          return () => clearTimeout(timer);
-        }
-      }, [canvasModal]);
-
-      useEffect(() => {
-        if (saveTimerRef.current) {
-          clearTimeout(saveTimerRef.current);
-          saveTimerRef.current = null;
-        }
-
-        let hydratedLocal = false;
         try {
           const raw = localStorage.getItem(storageKey);
           if (raw) {
             const parsed = JSON.parse(raw);
-            hydratedLocal = true;
-            isApplyingRemoteRef.current = true;
             if (Array.isArray(parsed.notes) && parsed.notes.length > 0) {
               setNotes(parsed.notes);
               setActiveNoteId(parsed.activeNoteId || parsed.notes[0].id);
             }
             if (Array.isArray(parsed.elements)) {
               setElements(parsed.elements.map(decodeElementFromCloud).filter(Boolean));
-            } else {
-              setElements([]);
             }
           }
         } catch (e) {
           console.error("Local cache read error", e);
         }
 
-        const clearHydrateGuardTimer = hydratedLocal
-          ? setTimeout(() => {
-              isApplyingRemoteRef.current = false;
-            }, 60)
-          : null;
-
         if (!window.__syncpadCloud?.enabled) {
           setSyncStatus("Local only (add Firebase config)");
-          return () => {
-            if (clearHydrateGuardTimer) clearTimeout(clearHydrateGuardTimer);
-          };
+          return;
         }
 
         setSyncStatus("Live Cloud");
@@ -772,10 +309,7 @@
           }, 50);
         });
 
-        return () => {
-          if (clearHydrateGuardTimer) clearTimeout(clearHydrateGuardTimer);
-          unsubscribe && unsubscribe();
-        };
+        return () => unsubscribe && unsubscribe();
       }, [roomCode, storageKey]);
 
       useEffect(() => {
@@ -813,9 +347,7 @@
         };
       }, [notes, elements, activeNoteId, roomCode, storageKey]);
 
-      const activeIndex = notes.findIndex((n) => n.id === activeNoteId);
-      const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
-      const activeNote = notes[resolvedIndex] || notes[0];
+      const activeNote = notes.find((n) => n.id === activeNoteId) || notes[0];
 
       const updateNoteContent = (value) => {
         setNotes((prev) => prev.map((n) => (n.id === activeNote.id ? { ...n, content: value } : n)));
@@ -830,41 +362,6 @@
         const created = { id, title: `Note ${notes.length + 1}`, content: "" };
         setNotes((prev) => [...prev, created]);
         setActiveNoteId(id);
-        setPreviewMode(false);
-      };
-
-      const duplicateNote = (id = activeNote.id) => {
-        const source = notes.find((n) => n.id === id) || activeNote;
-        if (!source) return;
-        const copyId = `note-${Date.now()}`;
-        const baseTitle = (source.title || "Untitled").trim();
-        const duplicated = {
-          id: copyId,
-          title: `${baseTitle} (Copy)`,
-          content: source.content || ""
-        };
-        setNotes((prev) => {
-          const idx = prev.findIndex((n) => n.id === source.id);
-          if (idx === -1) return [...prev, duplicated];
-          const next = [...prev];
-          next.splice(idx + 1, 0, duplicated);
-          return next;
-        });
-        setActiveNoteId(copyId);
-        setPreviewMode(false);
-      };
-
-      const moveNote = (direction) => {
-        const fromIdx = notes.findIndex((n) => n.id === activeNote.id);
-        if (fromIdx === -1) return;
-        const toIdx = direction === "left" ? fromIdx - 1 : fromIdx + 1;
-        if (toIdx < 0 || toIdx >= notes.length) return;
-        setNotes((prev) => {
-          const next = [...prev];
-          const [item] = next.splice(fromIdx, 1);
-          next.splice(toIdx, 0, item);
-          return next;
-        });
       };
 
       const deleteNote = (id) => {
@@ -893,252 +390,6 @@
         a.click();
       };
 
-      const generateFreshRoomCode = async (currentCode, maxAttempts = 25) => {
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
-          const candidate = generateRoomCode();
-          if (candidate === currentCode) continue;
-          if (isLocalRoomUtilised(candidate)) continue;
-
-          if (window.__syncpadCloud?.enabled && typeof window.__syncpadCloud.isRoomUtilised === "function") {
-            const utilisedInCloud = await window.__syncpadCloud.isRoomUtilised(candidate);
-            if (utilisedInCloud) continue;
-          }
-
-          return candidate;
-        }
-        return generateRoomCode();
-      };
-
-      const handleNewRoom = async () => {
-        if (isGeneratingRoom) return;
-        setIsGeneratingRoom(true);
-        try {
-          const freshCode = await generateFreshRoomCode(roomCode);
-          setConfirmClear(false);
-          setSelectedId(null);
-          setCanvasModal(null);
-          setHistory([]);
-          setRedoStack([]);
-          setRoomCode(freshCode);
-          setRoomInput(freshCode);
-        } finally {
-          setIsGeneratingRoom(false);
-        }
-      };
-
-      const handleClearRoom = async () => {
-        if (!confirmClear) {
-          setConfirmClear(true);
-          setTimeout(() => setConfirmClear(false), 3000);
-          return;
-        }
-
-        const freshNoteId = `note-${Date.now()}`;
-        const cleanNotes = [{ id: freshNoteId, title: "Shared Scratchpad", content: "" }];
-        const cleanElements = [];
-        const ts = Date.now();
-
-        setConfirmClear(false);
-        setSelectedId(null);
-        setCanvasModal(null);
-        setHistory([]);
-        setRedoStack([]);
-        fillImageCacheRef.current.clear();
-
-        isApplyingRemoteRef.current = true;
-        setNotes(cleanNotes);
-        setActiveNoteId(freshNoteId);
-        setElements(cleanElements);
-        setTimeout(() => {
-          isApplyingRemoteRef.current = false;
-        }, 60);
-
-        try {
-          localStorage.setItem(
-            storageKey,
-            JSON.stringify({
-              notes: cleanNotes,
-              elements: cleanElements,
-              activeNoteId: freshNoteId,
-              updatedAt: ts
-            })
-          );
-        } catch (err) {
-          console.error("Local clear error:", err);
-        }
-
-        if (window.__syncpadCloud?.enabled) {
-          try {
-            lastWrittenAtRef.current = ts;
-            await window.__syncpadCloud.saveRoom(roomCode, {
-              notes: cleanNotes,
-              elements: cleanElements,
-              activeNoteId: freshNoteId,
-              updatedAt: ts
-            });
-            setSyncStatus("Room cleared");
-          } catch (err) {
-            console.error("Firebase clear error:", err);
-            setSyncStatus("Sync error (check rules)");
-          }
-        }
-      };
-
-      const commitCanvasModal = (e) => {
-        if (e) e.preventDefault();
-        if (!canvasModal) return;
-
-        const trimmed = canvasModal.value.trim();
-        if (trimmed) {
-          const newItem =
-            canvasModal.type === "text"
-              ? {
-                  id: Date.now(),
-                  type: "text",
-                  x: canvasModal.x,
-                  y: canvasModal.y,
-                  text: trimmed,
-                  color,
-                  fontSize: strokeSize * 4 + 10
-                }
-              : {
-                  id: Date.now(),
-                  type: "sticky",
-                  x: canvasModal.x,
-                  y: canvasModal.y,
-                  text: trimmed
-                };
-
-          setRedoStack([]);
-          setElements((prev) => {
-            setHistory((h) => [...h, prev]);
-            return [...prev, newItem];
-          });
-        }
-        setCanvasModal(null);
-      };
-
-      const screenToWorld = (clientX, clientY) => {
-        const rect = canvasRef.current.getBoundingClientRect();
-        const sx = clientX - rect.left;
-        const sy = clientY - rect.top;
-        const { panX, panY, zoom } = viewportRef.current;
-        return {
-          x: round1((sx - panX) / zoom),
-          y: round1((sy - panY) / zoom)
-        };
-      };
-
-      const drawSingleElement = useCallback((ctx, el, renderFillImages = true) => {
-        ctx.save();
-        if (el.type === "fill" && el.dataUrl) {
-          if (renderFillImages) {
-            let img = fillImageCacheRef.current.get(el.id);
-            if (!img) {
-              img = new Image();
-              img.src = el.dataUrl;
-              img.onload = () => renderCanvas();
-              fillImageCacheRef.current.set(el.id, img);
-            }
-            if (img.complete && img.naturalWidth > 0) {
-              ctx.drawImage(img, 0, 0, BOARD_WIDTH, BOARD_HEIGHT);
-            }
-          }
-        } else if (el.type === "stroke" && Array.isArray(el.points)) {
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          ctx.strokeStyle = el.tool === "eraser" ? "#0f172a" : el.color;
-          ctx.globalAlpha = el.tool === "highlighter" ? 0.35 : 1;
-          ctx.lineWidth = el.tool === "highlighter" ? el.size * 4 : el.tool === "eraser" ? el.size * 6 : el.size;
-          ctx.beginPath();
-          if (el.points.length === 1) {
-            ctx.arc(el.points[0].x, el.points[0].y, ctx.lineWidth / 2, 0, Math.PI * 2);
-            ctx.fillStyle = ctx.strokeStyle;
-            ctx.fill();
-          } else {
-            el.points.forEach((pt, idx) => {
-              if (idx === 0) ctx.moveTo(pt.x, pt.y);
-              else ctx.lineTo(pt.x, pt.y);
-            });
-            ctx.stroke();
-          }
-        } else if (el.type === "line") {
-          ctx.lineCap = "round";
-          ctx.strokeStyle = el.color;
-          ctx.lineWidth = el.size;
-          ctx.beginPath();
-          ctx.moveTo(el.x1, el.y1);
-          ctx.lineTo(el.x2, el.y2);
-          ctx.stroke();
-        } else if (el.type === "arrow") {
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          ctx.strokeStyle = el.color;
-          ctx.lineWidth = el.size;
-          ctx.beginPath();
-          ctx.moveTo(el.x1, el.y1);
-          ctx.lineTo(el.x2, el.y2);
-          ctx.stroke();
-          drawArrowHead(ctx, el.x1, el.y1, el.x2, el.y2, el.size);
-        } else if (el.type === "rect") {
-          ctx.lineWidth = el.size;
-          if (el.filled) {
-            ctx.fillStyle = el.color;
-            ctx.fillRect(el.x, el.y, el.w, el.h);
-          }
-          ctx.strokeStyle = el.color;
-          ctx.strokeRect(el.x, el.y, el.w, el.h);
-        } else if (el.type === "ellipse") {
-          const cx = el.x + el.w / 2;
-          const cy = el.y + el.h / 2;
-          const rx = Math.abs(el.w / 2);
-          const ry = Math.abs(el.h / 2);
-          ctx.lineWidth = el.size;
-          ctx.beginPath();
-          ctx.ellipse(cx, cy, Math.max(0.5, rx), Math.max(0.5, ry), 0, 0, Math.PI * 2);
-          if (el.filled) {
-            ctx.fillStyle = el.color;
-            ctx.fill();
-          }
-          ctx.strokeStyle = el.color;
-          ctx.stroke();
-        } else if (el.type === "sticky") {
-          ctx.fillStyle = "#fef08a";
-          ctx.fillRect(el.x, el.y, 150, 100);
-          ctx.strokeStyle = "#eab308";
-          ctx.lineWidth = 1.5;
-          ctx.strokeRect(el.x, el.y, 150, 100);
-          ctx.fillStyle = "#1e293b";
-          ctx.font = "13px sans-serif";
-          ctx.fillText(el.text || "Note", el.x + 10, el.y + 24, 130);
-        } else if (el.type === "card") {
-          const w = el.w || 220;
-          const h = el.h || 120;
-          ctx.fillStyle = "#1e293b";
-          ctx.fillRect(el.x, el.y, w, h);
-          ctx.strokeStyle = el.color || "#38bdf8";
-          ctx.lineWidth = 2;
-          ctx.strokeRect(el.x, el.y, w, h);
-
-          ctx.fillStyle = el.color || "#38bdf8";
-          ctx.font = "bold 14px sans-serif";
-          ctx.fillText((el.title || "Note").slice(0, 28), el.x + 12, el.y + 24, w - 24);
-
-          ctx.fillStyle = "#e2e8f0";
-          ctx.font = "12px sans-serif";
-          const lines = String(el.excerpt || "").split("\n").slice(0, 3);
-          lines.forEach((line, idx) => {
-            ctx.fillText(line.slice(0, 36), el.x + 12, el.y + 48 + idx * 18, w - 24);
-          });
-        } else if (el.type === "text") {
-          const fontSize = el.fontSize || 18;
-          ctx.fillStyle = el.color || "#f8fafc";
-          ctx.font = `600 ${fontSize}px sans-serif`;
-          ctx.fillText(el.text || "", el.x, el.y);
-        }
-        ctx.restore();
-      }, []);
-
       const renderCanvas = useCallback(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -1151,50 +402,59 @@
           canvas.height = Math.floor(rect.height * dpr);
         }
 
-        const { panX, panY, zoom } = viewportRef.current;
-
         ctx.save();
         ctx.scale(dpr, dpr);
-        ctx.fillStyle = "#020617";
-        ctx.fillRect(0, 0, rect.width, rect.height);
+        ctx.clearRect(0, 0, rect.width, rect.height);
 
-        ctx.translate(panX, panY);
-        ctx.scale(zoom, zoom);
-
-        ctx.fillStyle = "#0f172a";
-        ctx.fillRect(0, 0, BOARD_WIDTH, BOARD_HEIGHT);
-        ctx.strokeStyle = "rgba(148, 163, 184, 0.25)";
-        ctx.lineWidth = 1.5 / zoom;
-        ctx.strokeRect(0, 0, BOARD_WIDTH, BOARD_HEIGHT);
-
-        ctx.fillStyle = "rgba(148, 163, 184, 0.16)";
-        const step = 28;
-        for (let x = step; x < BOARD_WIDTH; x += step) {
-          for (let y = step; y < BOARD_HEIGHT; y += step) {
+        ctx.fillStyle = "rgba(148, 163, 184, 0.14)";
+        const step = 24;
+        for (let x = step; x < rect.width; x += step) {
+          for (let y = step; y < rect.height; y += step) {
             ctx.fillRect(x, y, 1.5, 1.5);
           }
         }
 
         const all = draftElementRef.current ? [...elements, draftElementRef.current] : elements;
-        for (const el of all) {
-          drawSingleElement(ctx, el, true);
-        }
 
-        if (selectedId) {
-          const sel = elements.find((item) => item.id === selectedId);
-          const b = getElementBounds(sel);
-          if (b) {
-            ctx.save();
-            ctx.strokeStyle = "#38bdf8";
-            ctx.lineWidth = 1.5 / zoom;
-            ctx.setLineDash([5, 4]);
-            ctx.strokeRect(b.x, b.y, b.w, b.h);
-            ctx.restore();
+        for (const el of all) {
+          ctx.save();
+          if (el.type === "stroke" && Array.isArray(el.points)) {
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            ctx.strokeStyle = el.tool === "eraser" ? "#0f172a" : el.color;
+            ctx.globalAlpha = el.tool === "highlighter" ? 0.35 : 1;
+            ctx.lineWidth = el.tool === "highlighter" ? el.size * 4 : el.tool === "eraser" ? el.size * 6 : el.size;
+            ctx.beginPath();
+            if (el.points.length === 1) {
+              ctx.arc(el.points[0].x, el.points[0].y, ctx.lineWidth / 2, 0, Math.PI * 2);
+              ctx.fillStyle = ctx.strokeStyle;
+              ctx.fill();
+            } else {
+              el.points.forEach((pt, idx) => {
+                if (idx === 0) ctx.moveTo(pt.x, pt.y);
+                else ctx.lineTo(pt.x, pt.y);
+              });
+              ctx.stroke();
+            }
+          } else if (el.type === "rect") {
+            ctx.strokeStyle = el.color;
+            ctx.lineWidth = el.size;
+            ctx.strokeRect(el.x, el.y, el.w, el.h);
+          } else if (el.type === "sticky") {
+            ctx.fillStyle = "#fef08a";
+            ctx.fillRect(el.x, el.y, 150, 100);
+            ctx.strokeStyle = "#eab308";
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(el.x, el.y, 150, 100);
+            ctx.fillStyle = "#1e293b";
+            ctx.font = "13px sans-serif";
+            ctx.fillText(el.text || "Note", el.x + 10, el.y + 24, 130);
           }
+          ctx.restore();
         }
 
         ctx.restore();
-      }, [elements, selectedId, viewMode, zenMode, viewport, drawSingleElement]);
+      }, [elements, viewMode]);
 
       useEffect(() => {
         renderCanvas();
@@ -1202,150 +462,29 @@
         return () => window.removeEventListener("resize", renderCanvas);
       }, [renderCanvas]);
 
-      const sampleColorAtWorldPoint = (wx, wy) => {
-        const ix = Math.floor(wx);
-        const iy = Math.floor(wy);
-        if (ix < 0 || iy < 0 || ix >= BOARD_WIDTH || iy >= BOARD_HEIGHT) return null;
-
-        const off = document.createElement("canvas");
-        off.width = BOARD_WIDTH;
-        off.height = BOARD_HEIGHT;
-        const offCtx = off.getContext("2d");
-        for (const el of elements) {
-          if (el.type === "stroke" && el.tool === "eraser") continue;
-          drawSingleElement(offCtx, el, true);
-        }
-        const px = offCtx.getImageData(ix, iy, 1, 1).data;
-        if (px[3] < 20) return "#0f172a";
-        return rgbToHex(px[0], px[1], px[2]);
-      };
-
-      const canPointerDraw = (e) => {
-        if (!stylusOnly) return true;
-        return e.pointerType === "pen" || e.pointerType === "mouse";
-      };
-
-      const startPinchSession = () => {
-        const pts = Array.from(activePointersRef.current.values());
-        if (pts.length < 2) return;
-        const [a, b] = pts;
-        const dist = Math.max(10, Math.hypot(b.x - a.x, b.y - a.y));
-        const midX = (a.x + b.x) / 2;
-        const midY = (a.y + b.y) / 2;
-        pinchStateRef.current = {
-          startDist: dist,
-          startZoom: viewportRef.current.zoom,
-          startMidX: midX,
-          startMidY: midY,
-          startPanX: viewportRef.current.panX,
-          startPanY: viewportRef.current.panY
+      const getCanvasPoint = (e) => {
+        const rect = canvasRef.current.getBoundingClientRect();
+        return {
+          x: round1(e.clientX - rect.left),
+          y: round1(e.clientY - rect.top)
         };
       };
 
       const handlePointerDown = (e) => {
-        const rect = canvasRef.current.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        activePointersRef.current.set(e.pointerId, { x: sx, y: sy });
         e.currentTarget.setPointerCapture(e.pointerId);
+        const pt = getCanvasPoint(e);
 
-        if (activePointersRef.current.size >= 2) {
-          draftElementRef.current = null;
-          if (moveStateRef.current) {
-            setElements(moveStateRef.current.snapshotBeforeMove);
-            moveStateRef.current = null;
-          }
-          startPinchSession();
-          renderCanvas();
+        if (tool === "sticky") {
+          const label = window.prompt("Sticky note text:", "Idea");
+          if (label === null) return;
+          setHistory((h) => [...h, elements]);
+          setRedoStack([]);
+          setElements((prev) => [...prev, { id: Date.now(), type: "sticky", x: pt.x, y: pt.y, text: label }]);
           return;
         }
 
-        if (!canPointerDraw(e)) {
-          return;
-        }
-
-        const pt = screenToWorld(e.clientX, e.clientY);
-
-        if (tool === "eyedropper") {
-          const picked = sampleColorAtWorldPoint(pt.x, pt.y);
-          if (picked) {
-            setColor(picked);
-            setTool("pen");
-          }
-          return;
-        }
-
-        if (tool === "select") {
-          for (let i = elements.length - 1; i >= 0; i--) {
-            if (hitTestElement(elements[i], pt.x, pt.y)) {
-              const target = elements[i];
-              setSelectedId(target.id);
-              moveStateRef.current = {
-                id: target.id,
-                lastPt: pt,
-                snapshotBeforeMove: elements
-              };
-              return;
-            }
-          }
-          setSelectedId(null);
-          return;
-        }
-
-        setSelectedId(null);
-
-        if (tool === "fill") {
-          const off = document.createElement("canvas");
-          off.width = BOARD_WIDTH;
-          off.height = BOARD_HEIGHT;
-          const offCtx = off.getContext("2d");
-          for (const el of elements) {
-            drawSingleElement(offCtx, el, true);
-          }
-          const dataUrl = computeFloodFillDataUrl(off, pt.x, pt.y, color);
-          if (dataUrl) {
-            setRedoStack([]);
-            setElements((prev) => {
-              setHistory((h) => [...h, prev]);
-              return [...prev, { id: Date.now(), type: "fill", dataUrl, color }];
-            });
-          }
-          return;
-        }
-
-        if (tool === "text" || tool === "sticky") {
-          setCanvasModal({
-            type: tool,
-            x: pt.x,
-            y: pt.y,
-            value: ""
-          });
-          return;
-        }
-
-        if (tool === "line" || tool === "arrow") {
-          draftElementRef.current = {
-            id: Date.now(),
-            type: tool,
-            x1: pt.x,
-            y1: pt.y,
-            x2: pt.x,
-            y2: pt.y,
-            color,
-            size: strokeSize
-          };
-        } else if (tool === "rect" || tool === "ellipse") {
-          draftElementRef.current = {
-            id: Date.now(),
-            type: tool,
-            x: pt.x,
-            y: pt.y,
-            w: 0,
-            h: 0,
-            color,
-            size: strokeSize,
-            filled: fillShape
-          };
+        if (tool === "rect") {
+          draftElementRef.current = { id: Date.now(), type: "rect", x: pt.x, y: pt.y, w: 0, h: 0, color, size: strokeSize };
         } else {
           draftElementRef.current = { id: Date.now(), type: "stroke", tool, color, size: strokeSize, points: [pt] };
         }
@@ -1353,52 +492,9 @@
       };
 
       const handlePointerMove = (e) => {
-        if (!activePointersRef.current.has(e.pointerId)) return;
-        const rect = canvasRef.current.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        activePointersRef.current.set(e.pointerId, { x: sx, y: sy });
-
-        if (activePointersRef.current.size >= 2) {
-          if (!pinchStateRef.current) {
-            startPinchSession();
-          }
-          const pts = Array.from(activePointersRef.current.values());
-          const [a, b] = pts;
-          const dist = Math.max(10, Math.hypot(b.x - a.x, b.y - a.y));
-          const midX = (a.x + b.x) / 2;
-          const midY = (a.y + b.y) / 2;
-          const ps = pinchStateRef.current;
-
-          const nextZoom = clamp(round1(ps.startZoom * (dist / ps.startDist)), MIN_ZOOM, MAX_ZOOM);
-          const worldAnchorX = (ps.startMidX - ps.startPanX) / ps.startZoom;
-          const worldAnchorY = (ps.startMidY - ps.startPanY) / ps.startZoom;
-          const nextPanX = round1(midX - worldAnchorX * nextZoom);
-          const nextPanY = round1(midY - worldAnchorY * nextZoom);
-
-          setViewport({ panX: nextPanX, panY: nextPanY, zoom: nextZoom });
-          return;
-        }
-
-        if (!canPointerDraw(e)) {
-          return;
-        }
-
-        const pt = screenToWorld(e.clientX, e.clientY);
-
-        if (moveStateRef.current) {
-          const dx = pt.x - moveStateRef.current.lastPt.x;
-          const dy = pt.y - moveStateRef.current.lastPt.y;
-          if (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5) {
-            moveStateRef.current.lastPt = pt;
-            const targetId = moveStateRef.current.id;
-            setElements((prev) => prev.map((el) => (el.id === targetId ? translateElement(el, dx, dy) : el)));
-          }
-          return;
-        }
-
         const draft = draftElementRef.current;
         if (!draft) return;
+        const pt = getCanvasPoint(e);
 
         if (draft.type === "stroke") {
           const lastPt = draft.points[draft.points.length - 1];
@@ -1406,34 +502,14 @@
             draft.points.push(pt);
             renderCanvas();
           }
-        } else if (draft.type === "line" || draft.type === "arrow") {
-          draft.x2 = pt.x;
-          draft.y2 = pt.y;
-          renderCanvas();
-        } else if (draft.type === "rect" || draft.type === "ellipse") {
+        } else if (draft.type === "rect") {
           draft.w = round1(pt.x - draft.x);
           draft.h = round1(pt.y - draft.y);
           renderCanvas();
         }
       };
 
-      const handlePointerUpOrCancel = (e) => {
-        activePointersRef.current.delete(e.pointerId);
-        if (activePointersRef.current.size < 2) {
-          pinchStateRef.current = null;
-        }
-        if (activePointersRef.current.size > 0) {
-          return;
-        }
-
-        if (moveStateRef.current) {
-          const before = moveStateRef.current.snapshotBeforeMove;
-          moveStateRef.current = null;
-          setHistory((h) => [...h, before]);
-          setRedoStack([]);
-          return;
-        }
-
+      const handlePointerUp = () => {
         const draft = draftElementRef.current;
         if (!draft) return;
         draftElementRef.current = null;
@@ -1445,125 +521,9 @@
           }));
         }
 
+        setHistory((h) => [...h, elements]);
         setRedoStack([]);
-        setElements((prev) => {
-          setHistory((h) => [...h, prev]);
-          return [...prev, draft];
-        });
-      };
-
-      const handleWheel = (e) => {
-        e.preventDefault();
-        const rect = canvasRef.current.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const { panX, panY, zoom } = viewportRef.current;
-        const factor = e.deltaY < 0 ? 1.1 : 0.9;
-        const nextZoom = clamp(round1(zoom * factor), MIN_ZOOM, MAX_ZOOM);
-        const worldX = (sx - panX) / zoom;
-        const worldY = (sy - panY) / zoom;
-        setViewport({
-          panX: round1(sx - worldX * nextZoom),
-          panY: round1(sy - worldY * nextZoom),
-          zoom: nextZoom
-        });
-      };
-
-      const resetViewport = () => {
-        setViewport({ panX: 24, panY: 24, zoom: 1 });
-      };
-
-      const handleFitToBoard = () => {
-        const rect = canvasRef.current?.getBoundingClientRect();
-        if (!rect || rect.width <= 0 || rect.height <= 0) {
-          resetViewport();
-          return;
-        }
-
-        let minX = Infinity,
-          minY = Infinity,
-          maxX = -Infinity,
-          maxY = -Infinity;
-        for (const el of elements) {
-          const b = getElementBounds(el);
-          if (!b) continue;
-          if (b.x < minX) minX = b.x;
-          if (b.y < minY) minY = b.y;
-          if (b.x + b.w > maxX) maxX = b.x + b.w;
-          if (b.y + b.h > maxY) maxY = b.y + b.h;
-        }
-
-        const hasContent = Number.isFinite(minX) && maxX > minX && maxY > minY;
-        const boxX = hasContent ? minX : 0;
-        const boxY = hasContent ? minY : 0;
-        const boxW = hasContent ? maxX - minX : BOARD_WIDTH;
-        const boxH = hasContent ? maxY - minY : BOARD_HEIGHT;
-
-        const pad = 48;
-        const availW = Math.max(100, rect.width - pad * 2);
-        const availH = Math.max(100, rect.height - pad * 2);
-        const nextZoom = clamp(round1(Math.min(availW / boxW, availH / boxH)), MIN_ZOOM, 1.5);
-
-        const boxCenterX = boxX + boxW / 2;
-        const boxCenterY = boxY + boxH / 2;
-        const nextPanX = round1(rect.width / 2 - boxCenterX * nextZoom);
-        const nextPanY = round1(rect.height / 2 - boxCenterY * nextZoom);
-
-        setViewport({ panX: nextPanX, panY: nextPanY, zoom: nextZoom });
-      };
-
-      const handlePinNoteToBoard = () => {
-        if (!activeNote) return;
-        const rect = canvasRef.current?.getBoundingClientRect();
-        const { panX, panY, zoom } = viewportRef.current;
-
-        const centerScreenX = rect ? rect.width / 2 : 300;
-        const centerScreenY = rect ? rect.height / 2 : 220;
-        const offsetIndex = elements.filter((el) => el.type === "card").length % 6;
-
-        const worldX = clamp(
-          round1((centerScreenX - panX) / zoom - 110 + offsetIndex * 24),
-          40,
-          BOARD_WIDTH - 260
-        );
-        const worldY = clamp(
-          round1((centerScreenY - panY) / zoom - 60 + offsetIndex * 24),
-          40,
-          BOARD_HEIGHT - 160
-        );
-
-        const cleanExcerpt = String(activeNote.content || "")
-          .replace(/^#+\s*/gm, "")
-          .trim();
-
-        const newCard = {
-          id: `card-${Date.now()}`,
-          type: "card",
-          x: worldX,
-          y: worldY,
-          w: 220,
-          h: 120,
-          color,
-          title: activeNote.title || "Untitled Note",
-          excerpt: cleanExcerpt
-        };
-
-        setRedoStack([]);
-        setElements((prev) => {
-          setHistory((h) => [...h, prev]);
-          return [...prev, newCard];
-        });
-        setSelectedId(newCard.id);
-      };
-
-      const deleteSelectedElement = () => {
-        if (!selectedId) return;
-        setRedoStack([]);
-        setElements((prev) => {
-          setHistory((h) => [...h, prev]);
-          return prev.filter((el) => el.id !== selectedId);
-        });
-        setSelectedId(null);
+        setElements((prev) => [...prev, draft]);
       };
 
       const handleUndo = () => {
@@ -1572,7 +532,6 @@
         setRedoStack((r) => [...r, elements]);
         setHistory((h) => h.slice(0, -1));
         setElements(previous);
-        setSelectedId(null);
       };
 
       const handleRedo = () => {
@@ -1581,21 +540,13 @@
         setHistory((h) => [...h, elements]);
         setRedoStack((r) => r.slice(0, -1));
         setElements(next);
-        setSelectedId(null);
       };
 
       const exportPNG = () => {
-        const off = document.createElement("canvas");
-        off.width = BOARD_WIDTH;
-        off.height = BOARD_HEIGHT;
-        const offCtx = off.getContext("2d");
-        offCtx.fillStyle = "#0f172a";
-        offCtx.fillRect(0, 0, BOARD_WIDTH, BOARD_HEIGHT);
-        for (const el of elements) {
-          drawSingleElement(offCtx, el, true);
-        }
+        const canvas = canvasRef.current;
+        if (!canvas) return;
         const a = document.createElement("a");
-        a.href = off.toDataURL("image/png");
+        a.href = canvas.toDataURL("image/png");
         a.download = `syncpad-${roomCode}-board.png`;
         a.click();
       };
@@ -1609,114 +560,77 @@
         }
       };
 
-      const isShapeTool = tool === "rect" || tool === "ellipse";
-      const hasCustomColor = !COLORS.includes(color);
-
       return (
         <div className="flex flex-col h-full bg-slate-950 text-slate-100 select-none">
-          {!zenMode && (
-            <header className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-900 border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <span className="font-bold tracking-tight text-sky-400 text-base">SyncPad</span>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                  {syncStatus}
-                </span>
-                <span
-                  className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-200 border border-slate-700"
-                  title="Active devices currently viewing this room"
-                >
-                  <span className={`w-2 h-2 rounded-full ${activeDevices > 1 ? "bg-sky-400 animate-pulse" : "bg-emerald-400"}`} />
-                  {activeDevices} {activeDevices === 1 ? "device" : "devices"}
-                </span>
-              </div>
+          <header className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-900 border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <span className="font-bold tracking-tight text-sky-400 text-base">SyncPad</span>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                {syncStatus}
+              </span>
+            </div>
 
-              <form onSubmit={handleRoomSubmit} className="flex items-center gap-1.5">
-                <span className="text-xs text-slate-400">Room:</span>
-                <input
-                  value={roomInput}
-                  onChange={(e) => setRoomInput(e.target.value.toUpperCase())}
-                  className="w-24 px-2 py-1 text-xs font-mono uppercase bg-slate-800 border border-slate-700 rounded text-white focus:outline-none focus:border-sky-400"
-                  aria-label="Room Code"
-                />
-                <button type="submit" className="px-2.5 py-1 text-xs font-medium bg-sky-500 hover:bg-sky-400 text-slate-950 rounded min-h-[34px]">
-                  Join
-                </button>
-                <button
-                  type="button"
-                  onClick={handleNewRoom}
-                  disabled={isGeneratingRoom}
-                  className="px-2.5 py-1 text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-sky-300 border border-slate-700 rounded min-h-[34px]"
-                  title="Generate a fresh unused room code"
-                >
-                  {isGeneratingRoom ? "Finding..." : "New"}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleClearRoom}
-                  className={`px-2.5 py-1 text-xs font-medium rounded min-h-[34px] border ${
-                    confirmClear
-                      ? "bg-rose-600 text-white border-rose-400"
-                      : "bg-slate-800 hover:bg-rose-950/70 text-rose-300 border-slate-700"
-                  }`}
-                  title="Tap twice to clear current room notes and board"
-                >
-                  {confirmClear ? "Confirm Clear?" : "Clear Room"}
-                </button>
-                <button
-                  type="button"
-                  onClick={copyRoomLink}
-                  className="flex items-center gap-1 px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded min-h-[34px]"
-                  title="Copy Room Link"
-                >
-                  <Icon "check" "share"} : ? className="w-3.5 h-3.5 text-sky-400" name="{copied"/>
-                  <span>{copied ? "Copied" : "Link"}</span>
-                </button>
-              </form>
+            <form onSubmit={handleRoomSubmit} className="flex items-center gap-1.5">
+              <span className="text-xs text-slate-400">Room:</span>
+              <input
+                value={roomInput}
+                onChange={(e) => setRoomInput(e.target.value.toUpperCase())}
+                className="w-24 px-2 py-1 text-xs font-mono uppercase bg-slate-800 border border-slate-700 rounded text-white focus:outline-none focus:border-sky-400"
+                aria-label="Room Code"
+              />
+              <button type="submit" className="px-2.5 py-1 text-xs font-medium bg-sky-500 hover:bg-sky-400 text-slate-950 rounded">
+                Join
+              </button>
+              <button
+                type="button"
+                onClick={copyRoomLink}
+                className="flex items-center gap-1 px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded"
+                title="Copy Room Link"
+              >
+                <Icon name={copied ? "check" : "share"} className="w-3.5 h-3.5 text-sky-400" />
+                <span>{copied ? "Copied" : "Link"}</span>
+              </button>
+            </form>
 
-              <div className="hidden md:flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
-                <button
-                  type="button"
-                  onClick={() => setViewMode("notes")}
-                  className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded-md ${viewMode === "notes" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
-                >
-                  <Icon className="w-3.5 h-3.5" name="fileText"/> Notes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode("split")}
-                  className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded-md ${viewMode === "split" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
-                >
-                  <Icon className="w-3.5 h-3.5" name="columns"/> Split
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode("whiteboard")}
-                  className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded-md ${viewMode === "whiteboard" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
-                >
-                  <Icon className="w-3.5 h-3.5" name="penTool"/> Board
-                </button>
-              </div>
-            </header>
-          )}
+            <div className="hidden md:flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+              <button
+                onClick={() => setViewMode("notes")}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md ${viewMode === "notes" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+              >
+                <Icon name="fileText" className="w-3.5 h-3.5" /> Notes
+              </button>
+              <button
+                onClick={() => setViewMode("split")}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md ${viewMode === "split" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+              >
+                <Icon name="columns" className="w-3.5 h-3.5" /> Split
+              </button>
+              <button
+                onClick={() => setViewMode("whiteboard")}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md ${viewMode === "whiteboard" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+              >
+                <Icon name="penTool" className="w-3.5 h-3.5" /> Board
+              </button>
+            </div>
+          </header>
 
           <main className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
-            {!zenMode && (viewMode === "notes" || viewMode === "split") && (
+            {(viewMode === "notes" || viewMode === "split") && (
               <section className={`flex flex-col min-h-0 bg-slate-900/60 border-b md:border-b-0 md:border-r border-slate-800 ${viewMode === "split" ? "h-1/2 md:h-full md:w-5/12" : "flex-1"}`}>
-                <div className="flex items-center gap-1.5 px-2 py-1.5 bg-slate-900 border-b border-slate-800 overflow-x-auto no-scrollbar">
+                <div className="flex items-center gap-1 px-2 py-1.5 bg-slate-900 border-b border-slate-800 overflow-x-auto">
                   {notes.map((n) => (
                     <div
                       key={n.id}
                       onClick={() => setActiveNoteId(n.id)}
-                      className={`group flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs cursor-pointer shrink-0 min-h-[36px] ${
+                      className={`group flex items-center gap-1.5 px-2.5 py-1 rounded text-xs cursor-pointer shrink-0 ${
                         n.id === activeNote.id ? "bg-slate-800 text-sky-300 border border-sky-500/40" : "text-slate-400 hover:bg-slate-800/50"
                       }`}
                     >
-                      <span className="truncate max-w-[120px]">{n.title || "Untitled"}</span>
+                      <span className="truncate max-w-[110px]">{n.title || "Untitled"}</span>
                       {notes.length > 1 && (
                         <button
-                          type="button"
                           onClick={(e) => { e.stopPropagation(); deleteNote(n.id); }}
-                          className="opacity-70 hover:opacity-100 text-rose-400 px-1"
+                          className="opacity-60 hover:opacity-100 text-rose-400"
                           title="Delete note"
                         >
                           ×
@@ -1724,76 +638,23 @@
                       )}
                     </div>
                   ))}
-                  <button type="button" onClick={addNote} className="p-2 text-slate-400 hover:text-sky-400 rounded-lg min-w-[36px] min-h-[36px] flex items-center justify-center" title="New Note">
-                    <Icon className="w-4 h-4" name="plus"/>
+                  <button onClick={addNote} className="p-1 text-slate-400 hover:text-sky-400 rounded" title="New Note">
+                    <Icon name="plus" className="w-4 h-4" />
                   </button>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-1.5 px-2 py-1.5 bg-slate-900/80 border-b border-slate-800 text-xs">
-                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
-                    <button
-                      type="button"
-                      onClick={() => setPreviewMode((p) => !p)}
-                      className={`px-2.5 py-1.5 rounded min-h-[34px] font-medium border ${
-                        previewMode
-                          ? "bg-sky-500 text-slate-950 border-sky-400"
-                          : "bg-slate-800 hover:bg-slate-700 text-sky-300 border-slate-700"
-                      }`}
-                      title="Toggle live Markdown preview"
-                    >
-                      {previewMode ? "Edit" : "Preview"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => duplicateNote(activeNote.id)}
-                      className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 rounded min-h-[34px] text-slate-200"
-                      title="Duplicate current note"
-                    >
-                      Duplicate
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => moveNote("left")}
-                      disabled={resolvedIndex <= 0}
-                      className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 rounded min-h-[34px]"
-                      title="Move note tab left"
-                      aria-label="Move note left"
-                    >
-                      ←
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => moveNote("right")}
-                      disabled={resolvedIndex >= notes.length - 1}
-                      className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 rounded min-h-[34px]"
-                      title="Move note tab right"
-                      aria-label="Move note right"
-                    >
-                      →
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handlePinNoteToBoard}
-                      className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded min-h-[34px] font-medium"
-                      title="Pin active note as a card on the whiteboard"
-                    >
-                      Pin to Board
-                    </button>
-                    {!previewMode && (
-                      <>
-                        <button type="button" onClick={() => insertSnippet("## Heading")} className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 rounded min-h-[34px]">H2</button>
-                        <button type="button" onClick={() => insertSnippet("- [ ] Task item")} className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 rounded min-h-[34px]">Checklist</button>
-                        <button type="button" onClick={() => insertSnippet("**bold text**")} className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 rounded font-bold min-h-[34px]">B</button>
-                        <button type="button" onClick={() => insertSnippet("```\ncode\n```")} className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 rounded font-mono min-h-[34px]">Code</button>
-                      </>
-                    )}
-                  </div>
-
+                <div className="flex flex-wrap items-center justify-between gap-1 px-2 py-1.5 bg-slate-900/80 border-b border-slate-800 text-xs">
                   <div className="flex items-center gap-1">
-                    <button type="button" onClick={() => navigator.clipboard?.writeText(activeNote.content)} className="flex items-center gap-1 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 min-h-[34px]">
+                    <button onClick={() => insertSnippet("## Heading")} className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">H2</button>
+                    <button onClick={() => insertSnippet("- [ ] Task item")} className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">Checklist</button>
+                    <button onClick={() => insertSnippet("**bold text**")} className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded font-bold">B</button>
+                    <button onClick={() => insertSnippet("```\ncode\n```")} className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded font-mono">Code</button>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => navigator.clipboard?.writeText(activeNote.content)} className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-300">
                       <Icon name="copy" className="w-3.5 h-3.5" /> Copy
                     </button>
-                    <button type="button" onClick={exportMarkdown} className="flex items-center gap-1 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 min-h-[34px]">
+                    <button onClick={exportMarkdown} className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-300">
                       <Icon name="download" className="w-3.5 h-3.5" /> .MD
                     </button>
                   </div>
@@ -1802,312 +663,119 @@
                 <input
                   value={activeNote.title}
                   onChange={(e) => updateNoteTitle(e.target.value)}
-                  placeholder="Edit note title anytime..."
+                  placeholder="Note title..."
                   className="px-3 py-2 bg-transparent border-b border-slate-800/80 font-semibold text-sm text-white focus:outline-none"
                 />
-
-                {previewMode ? (
-                  <div
-                    className="flex-1 w-full p-3 overflow-y-auto text-sm bg-slate-950/40 select-text"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(activeNote.content) }}
-                  />
-                ) : (
-                  <textarea
-                    value={activeNote.content}
-                    onChange={(e) => updateNoteContent(e.target.value)}
-                    placeholder="Type or edit note text anytime..."
-                    className="flex-1 w-full p-3 bg-transparent text-sm text-slate-100 leading-relaxed resize-none focus:outline-none select-text"
-                  />
-                )}
+                <textarea
+                  value={activeNote.content}
+                  onChange={(e) => updateNoteContent(e.target.value)}
+                  placeholder="Type your note here..."
+                  className="flex-1 w-full p-3 bg-transparent text-sm text-slate-100 leading-relaxed resize-none focus:outline-none select-text"
+                />
               </section>
             )}
 
-            {(zenMode || viewMode === "whiteboard" || viewMode === "split") && (
-              <section
-                className={`flex flex-col min-h-0 bg-slate-950 ${
-                  zenMode
-                    ? "fixed inset-0 z-40 w-full h-full"
-                    : viewMode === "split"
-                      ? "h-1/2 md:h-full md:w-7/12"
-                      : "flex-1"
-                }`}
-              >
-                <div className="flex flex-col gap-1.5 px-2.5 py-2 bg-slate-900 border-b border-slate-800">
-                  <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            {(viewMode === "whiteboard" || viewMode === "split") && (
+              <section className={`flex flex-col min-h-0 bg-slate-950 ${viewMode === "split" ? "h-1/2 md:h-full md:w-7/12" : "flex-1"}`}>
+                <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 bg-slate-900 border-b border-slate-800">
+                  <div className="flex items-center gap-1">
                     {[
-                      { id: "select", icon: "cursor", title: "Select & Move" },
                       { id: "pen", icon: "penTool", title: "Pen" },
                       { id: "highlighter", icon: "highlighter", title: "Highlighter" },
                       { id: "eraser", icon: "eraser", title: "Eraser" },
-                      { id: "fill", icon: "bucket", title: "Flood Fill" },
-                      { id: "eyedropper", icon: "eyedropper", title: "Eyedropper" },
-                      { id: "line", icon: "line", title: "Line" },
-                      { id: "arrow", icon: "arrow", title: "Arrow" },
                       { id: "rect", icon: "square", title: "Rectangle" },
-                      { id: "ellipse", icon: "circle", title: "Ellipse" },
-                      { id: "text", icon: "textType", title: "Text" },
                       { id: "sticky", icon: "sticky", title: "Sticky Note" }
                     ].map((t) => (
                       <button
                         key={t.id}
-                        type="button"
                         onClick={() => setTool(t.id)}
                         title={t.title}
-                        aria-label={t.title}
-                        className={`p-2 rounded-lg shrink-0 min-w-[40px] min-h-[40px] flex items-center justify-center ${
-                          tool === t.id ? "bg-sky-500 text-slate-950 shadow-sm" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                        }`}
+                        className={`p-1.5 rounded ${tool === t.id ? "bg-sky-500 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
                       >
                         <Icon name={t.icon} className="w-4 h-4" />
                       </button>
                     ))}
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
-                      {COLORS.map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          onClick={() => setColor(c)}
-                          style={{ backgroundColor: c }}
-                          className={`w-7 h-7 rounded-full border-2 ${color === c ? "border-white scale-110" : "border-slate-700"}`}
-                          aria-label={`Color ${c}`}
-                        />
-                      ))}
-                      {hasCustomColor && (
-                        <span
-                          style={{ backgroundColor: color }}
-                          className="w-7 h-7 rounded-full border-2 border-white ring-2 ring-sky-400/60"
-                          title={`Sampled color: ${color}`}
-                        />
-                      )}
-                      {isShapeTool && (
-                        <button
-                          type="button"
-                          onClick={() => setFillShape((f) => !f)}
-                          className={`ml-1 px-2.5 py-1 rounded text-xs font-medium border ${
-                            fillShape
-                              ? "bg-sky-500/20 text-sky-300 border-sky-400"
-                              : "bg-slate-800 text-slate-300 border-slate-700"
-                          }`}
-                        >
-                          {fillShape ? "Filled" : "Outline"}
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-1">
-                      {SIZE_PRESETS.map((p) => (
-                        <button
-                          key={p.label}
-                          type="button"
-                          onClick={() => setStrokeSize(p.value)}
-                          className={`px-2 py-1 rounded text-xs font-semibold min-h-[32px] ${
-                            strokeSize === p.value ? "bg-sky-500 text-slate-950" : "bg-slate-800 text-slate-300"
-                          }`}
-                          title={`Size ${p.label}`}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
-
+                  <div className="flex items-center gap-1">
+                    {COLORS.map((c) => (
                       <button
-                        type="button"
-                        onClick={resetViewport}
-                        className="px-2 py-1 rounded text-xs font-mono bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 min-h-[32px]"
-                        title="Reset Pan & Zoom to 100%"
-                      >
-                        {Math.round(viewport.zoom * 100)}%
-                      </button>
+                        key={c}
+                        onClick={() => setColor(c)}
+                        style={{ backgroundColor: c }}
+                        className={`w-5 h-5 rounded-full border ${color === c ? "border-white scale-110" : "border-slate-700"}`}
+                        aria-label={`Color ${c}`}
+                      />
+                    ))}
+                  </div>
 
-                      <button
-                        type="button"
-                        onClick={handleFitToBoard}
-                        className="px-2 py-1 rounded text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 min-h-[32px]"
-                        title="Fit content or full 2000x1400 workspace into view"
-                      >
-                        Fit
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setStylusOnly((s) => !s)}
-                        className={`px-2 py-1 rounded text-xs font-medium border min-h-[32px] ${
-                          stylusOnly
-                            ? "bg-amber-500/20 text-amber-300 border-amber-400"
-                            : "bg-slate-800 text-slate-300 border-slate-700"
-                        }`}
-                        title="When ON, fingers only pan/zoom while stylus or mouse draws"
-                      >
-                        {stylusOnly ? "Pen Only" : "Touch+Pen"}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setZenMode((z) => !z)}
-                        className={`px-2 py-1 rounded text-xs font-medium border min-h-[32px] ${
-                          zenMode
-                            ? "bg-sky-500 text-slate-950 border-sky-400 font-semibold"
-                            : "bg-slate-800 text-slate-300 border-slate-700"
-                        }`}
-                        title="Maximize canvas by hiding header and notes"
-                      >
-                        {zenMode ? "Exit Zen" : "Zen"}
-                      </button>
-
-                      {selectedId && (
-                        <button
-                          type="button"
-                          onClick={deleteSelectedElement}
-                          className="px-2.5 py-1 text-xs font-medium bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 rounded min-h-[32px]"
-                          title="Delete Selected"
-                        >
-                          Delete
-                        </button>
-                      )}
-
-                      <button type="button" onClick={handleUndo} disabled={history.length === 0} className="p-2 bg-slate-800 disabled:opacity-30 rounded-lg min-w-[36px] min-h-[36px] flex items-center justify-center" title="Undo">
-                        <Icon name="undo" className="w-4 h-4" />
-                      </button>
-                      <button type="button" onClick={handleRedo} disabled={redoStack.length === 0} className="p-2 bg-slate-800 disabled:opacity-30 rounded-lg min-w-[36px] min-h-[36px] flex items-center justify-center" title="Redo">
-                        <Icon name="redo" className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRedoStack([]);
-                          setElements((prev) => {
-                            setHistory((h) => [...h, prev]);
-                            return [];
-                          });
-                          setSelectedId(null);
-                          fillImageCacheRef.current.clear();
-                        }}
-                        className="p-2 bg-slate-800 hover:bg-rose-950 text-rose-400 rounded-lg min-w-[36px] min-h-[36px] flex items-center justify-center"
-                        title="Clear Board"
-                      >
-                        <Icon name="trash" className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={exportPNG}
-                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 rounded-lg min-h-[36px]"
-                        title="Export PNG"
-                      >
-                        <Icon name="download" className="w-3.5 h-3.5" /> PNG
-                      </button>
-                    </div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="range"
+                      min="1"
+                      max="10"
+                      value={strokeSize}
+                      onChange={(e) => setStrokeSize(Number(e.target.value))}
+                      className="w-16 accent-sky-400"
+                      title="Stroke Size"
+                    />
+                    <button onClick={handleUndo} disabled={history.length === 0} className="p-1.5 bg-slate-800 disabled:opacity-30 rounded" title="Undo">
+                      <Icon name="undo" className="w-4 h-4" />
+                    </button>
+                    <button onClick={handleRedo} disabled={redoStack.length === 0} className="p-1.5 bg-slate-800 disabled:opacity-30 rounded" title="Redo">
+                      <Icon name="redo" className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => { setHistory((h) => [...h, elements]); setElements([]); }}
+                      className="p-1.5 bg-slate-800 hover:bg-rose-950 text-rose-400 rounded"
+                      title="Clear Board"
+                    >
+                      <Icon name="trash" className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={exportPNG}
+                      className="flex items-center gap-1 px-2 py-1 text-xs bg-slate-800 hover:bg-slate-700 rounded"
+                      title="Export PNG"
+                    >
+                      <Icon name="download" className="w-3.5 h-3.5" /> PNG
+                    </button>
                   </div>
                 </div>
 
                 <div className="relative flex-1 min-h-0">
-                  {zenMode && (
-                    <button
-                      type="button"
-                      onClick={() => setZenMode(false)}
-                      className="fixed top-3 right-3 z-50 px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-900/90 hover:bg-slate-800 text-sky-300 border border-sky-500/40 shadow-lg min-h-[38px]"
-                    >
-                      Exit Zen
-                    </button>
-                  )}
-
-                  {canvasModal && (
-                    <div
-                      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4"
-                      onPointerDown={(e) => {
-                        if (e.target === e.currentTarget) setCanvasModal(null);
-                      }}
-                    >
-                      <form
-                        onSubmit={commitCanvasModal}
-                        className="w-full max-w-sm rounded-xl bg-slate-900 border border-slate-700 p-4 shadow-2xl flex flex-col gap-3"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-semibold text-sky-300">
-                            {canvasModal.type === "text" ? "Add Canvas Text" : "Add Sticky Note"}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setCanvasModal(null)}
-                            className="text-slate-400 hover:text-white px-2 py-1 text-base leading-none min-h-[34px]"
-                            aria-label="Close"
-                          >
-                            ×
-                          </button>
-                        </div>
-
-                        <input
-                          ref={canvasModalInputRef}
-                          type="text"
-                          value={canvasModal.value}
-                          onChange={(e) => setCanvasModal((prev) => (prev ? { ...prev, value: e.target.value } : null))}
-                          onKeyDown={(e) => {
-                            if (e.key === "Escape") setCanvasModal(null);
-                          }}
-                          placeholder={canvasModal.type === "text" ? "Type label text..." : "Type sticky note..."}
-                          className="w-full px-3 py-2.5 rounded-lg bg-slate-800 border border-slate-700 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-sky-400 select-text"
-                        />
-
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setCanvasModal(null)}
-                            className="px-3.5 py-2 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 min-h-[38px]"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="submit"
-                            className="px-4 py-2 rounded-lg text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 min-h-[38px]"
-                          >
-                            {canvasModal.type === "text" ? "Place Text" : "Place Sticky"}
-                          </button>
-                        </div>
-                      </form>
-                    </div>
-                  )}
-
                   <canvas
                     ref={canvasRef}
                     onPointerDown={handlePointerDown}
                     onPointerMove={handlePointerMove}
-                    onPointerUp={handlePointerUpOrCancel}
-                    onPointerCancel={handlePointerUpOrCancel}
-                    onWheel={handleWheel}
+                    onPointerUp={handlePointerUp}
                     style={{ touchAction: "none" }}
-                    className={`w-full h-full block ${tool === "select" ? "cursor-grab active:cursor-grabbing" : "cursor-crosshair"}`}
+                    className="w-full h-full block cursor-crosshair"
                   />
                 </div>
               </section>
             )}
           </main>
 
-          {!zenMode && (
-            <nav className="flex md:hidden items-center justify-around py-1.5 bg-slate-900 border-t border-slate-800 text-xs">
-              <button
-                type="button"
-                onClick={() => setViewMode("notes")}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg min-h-[40px] ${viewMode === "notes" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
-              >
-                <Icon name="fileText" className="w-4 h-4" /> Notes
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode("split")}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg min-h-[40px] ${viewMode === "split" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
-              >
-                <Icon name="columns" className="w-4 h-4" /> Split
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode("whiteboard")}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg min-h-[40px] ${viewMode === "whiteboard" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
-              >
-                <Icon name="penTool" className="w-4 h-4" /> Board
-              </button>
-            </nav>
-          )}
+          <nav className="flex md:hidden items-center justify-around py-1.5 bg-slate-900 border-t border-slate-800 text-xs">
+            <button
+              onClick={() => setViewMode("notes")}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg ${viewMode === "notes" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+            >
+              <Icon name="fileText" className="w-4 h-4" /> Notes
+            </button>
+            <button
+              onClick={() => setViewMode("split")}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg ${viewMode === "split" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+            >
+              <Icon name="columns" className="w-4 h-4" /> Split
+            </button>
+            <button
+              onClick={() => setViewMode("whiteboard")}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg ${viewMode === "whiteboard" ? "bg-sky-500 text-slate-950 font-semibold" : "text-slate-300"}`}
+            >
+              <Icon name="penTool" className="w-4 h-4" /> Board
+            </button>
+          </nav>
         </div>
       );
     }
